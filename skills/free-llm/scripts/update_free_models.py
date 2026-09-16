@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-update_free_models.py — mantém a lista de modelos FREE de 2 provedores
-(NVIDIA, Nous, Cloudflare) atualizada no config.yaml do perfil ativo.
+update_free_models.py — mantém a lista de modelos FREE de 4 provedores
+(OpenRouter, NVIDIA, Nous, Cloudflare) atualizada no config.yaml do perfil pesquisa.
 
 PROBLEMA que resolve: os provedores trocam os modelos gratuitos com frequência.
-Este script cobre os 2 provedores restantes (OpenRouter removido do cron).
+Este script cobre OpenRouter, NVIDIA NIM, Nous Portal e Cloudflare Workers AI.
 
 As fontes e como cada uma informa "gratuito":
+  - OpenRouter : /models expõe modelos :free e/ou pricing 0; validamos via
+                 /chat/completions com OPENROUTER_API_KEY.
   - NVIDIA NIM : /models NÃO expõe preço. Os free são os "previews" que rodam
                  via integrate.api.nvidia.com sem billing. Sondamos uma lista
                  conhecida de candidatos e ficamos com os que respondem 200.
@@ -38,7 +40,7 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes/profiles
 ENV_PATH = HERMES_HOME / ".env"
 CONFIG_YAML = HERMES_HOME / "config.yaml"
 
-TOP_N = 4                 # quantos fallbacks compõem a cadeia final
+TOP_N = 10                # quantos fallbacks compõem a cadeia final
 PROBE_CAP = 4             # quantos candidatos por fonte sao sondados (ping real)
 MAX_RETRIES = 0           # sem retry: modelo free instavel/lento e melhor pular
 BASE_DELAY = 1.0
@@ -66,8 +68,25 @@ NVIDIA_CANDIDATES = [
     "moonshotai/kimi-k2.6",
 ]
 
+# OpenRouter: modelos free via catálogo /models + probe OpenAI-compatible
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 # nós free: rotear como custom (provider nativo "nous" exige OAuth)
 NOUS_BASE_URL = "https://inference-api.nousresearch.com/v1"
+
+# Cloudflare AI: modelos free via Workers AI
+CLOUDFLARE_ACCOUNT_ID = "873e5324eb43fe21573205d16ef9212b"
+CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run"
+CLOUDFLARE_CANDIDATES = [
+    "@cf/meta/llama-3.1-8b-instruct",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/meta/llama-3.2-1b-instruct",
+    "@cf/meta/llama-3.2-3b-instruct",
+    "@cf/meta/llama-4-scout-17b-16e-instruct",
+    "@cf/google/gemma-7b-it-lora",
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    "@cf/mistralai/mistral-small-3.1-24b-instruct",
+]
 
 
 def load_key(env_name: str) -> Optional[str]:
@@ -155,6 +174,33 @@ def collect_nvidia(key: str) -> list[dict]:
     return out
 
 
+def collect_openrouter(key: str) -> list[dict]:
+    """Coleta modelos OpenRouter gratuitos (:free ou pricing 0) e valida por ping real."""
+    out: list[dict] = []
+    status, body = _request(f"{OPENROUTER_BASE_URL}/models", key)
+    if status != 200:
+        print(f"  [openrouter] /models HTTP {status}", file=sys.stderr)
+        return out
+    try:
+        models = json.loads(body).get("data", [])
+    except json.JSONDecodeError:
+        return out
+    for m in models:
+        mid = m.get("id") or ""
+        if not mid or not is_agent_text(mid):
+            continue
+        if ":free" not in mid and not is_free(m):
+            continue
+        out.append({
+            "model": mid,
+            "provider": "openrouter",
+            "base_url": OPENROUTER_BASE_URL,
+            "context": int(m.get("context_length") or 0),
+        })
+    out.sort(key=lambda c: c["context"], reverse=True)
+    return [c for c in out[:PROBE_CAP] if probe(c["base_url"], key, c["model"])]
+
+
 def collect_nous(key: str) -> list[dict]:
     out: list[dict] = []
     status, body = _request(f"{NOUS_BASE_URL}/models", key)
@@ -183,8 +229,46 @@ def collect_nous(key: str) -> list[dict]:
     return [c for c in out[:PROBE_CAP] if probe(c["base_url"], key, c["model"])]
 
 
-def build_chain(nvidia: list[dict], nous: list[dict]) -> list[dict]:
-    """Cadeia final: nvidia + nous (ordem de preferência).
+def collect_cloudflare(key: str) -> list[dict]:
+    """Sonda modelos Cloudflare AI (Workers AI) e retorna os que responderem 200."""
+    out: list[dict] = []
+    for mid in CLOUDFLARE_CANDIDATES:
+        model_url = f"{CLOUDFLARE_BASE_URL}/{mid}"
+        if not probe_cloudflare(model_url, key, mid):
+            continue
+        out.append({
+            "model": mid,
+            "provider": "custom",
+            "base_url": model_url,
+            "key_env": "CLOUDFLARE_API_TOKEN",
+        })
+    return out
+
+
+def probe_cloudflare(url: str, key: str, model_id: str) -> bool:
+    """Testa um modelo Cloudflare via POST no endpoint /run/{model}."""
+    import requests
+    try:
+        r = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={"messages": [{"role": "user", "content": "ping"}], "max_tokens": 8},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("success"):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def build_chain(nvidia: list[dict], openrouter: list[dict], nous: list[dict], cloudflare: list[dict]) -> list[dict]:
+    """Cadeia final: nvidia + openrouter + nous + cloudflare (ordem de preferência).
 
     Os candidatos JÁ foram validados (probe 200) em collect_*. Aqui só se
     monta a cadeia na ordem de preferência, sem re-fazer requisição."""
@@ -209,7 +293,9 @@ def build_chain(nvidia: list[dict], nous: list[dict]) -> list[dict]:
                 return
 
     add(nvidia, 2)
-    add(nous, 4)
+    add(openrouter, 5)
+    add(nous, 7)
+    add(cloudflare, TOP_N)
     return chain
 
 
@@ -252,17 +338,27 @@ def main() -> int:
     check_only = "--check" in sys.argv
 
     nv_key = load_key("NVIDIA_API_KEY")
+    or_key = load_key("OPENROUTER_API_KEY")
     no_key = load_key("NOUS_API_KEY")
 
     print("=== nvidia ===")
     nvidia = collect_nvidia(nv_key) if nv_key else []
     print(f"  {len(nvidia)} previews respondendo")
 
+    print("=== openrouter ===")
+    openrouter = collect_openrouter(or_key) if or_key else []
+    print(f"  {len(openrouter)} modelos free respondendo")
+
     print("=== nous ===")
     nous = collect_nous(no_key) if no_key else []
     print(f"  {len(nous)} candidatos free")
 
-    chain = build_chain(nvidia, nous)
+    print("=== cloudflare ===")
+    cf_key = load_key("CLOUDFLARE_API_TOKEN")
+    cloudflare = collect_cloudflare(cf_key) if cf_key else []
+    print(f"  {len(cloudflare)} modelos respondendo")
+
+    chain = build_chain(nvidia, openrouter, nous, cloudflare)
     if not chain:
         print("[ERRO] nenhum candidato validado — nada alterado.", file=sys.stderr)
         return 1
@@ -271,11 +367,12 @@ def main() -> int:
     changed = apply_fallback_chain(chain, check_only)
     if changed:
         print("[OK] config.yaml atualizado.")
-    # Reinicia o gateway para que as novas seleções de modelo entrem em efeito
-    print("[acao] reiniciando gateway para assumir novos modelos...")
-    import subprocess
-    subprocess.run(["hermes", "gateway", "restart"], capture_output=True, timeout=30)
-
+        # Reinicia o gateway para que as novas seleções de modelo entrem em efeito
+        print("[acao] reiniciando gateway para assumir novos modelos...")
+        import subprocess
+        subprocess.run(["hermes", "gateway", "restart"], capture_output=True, timeout=30)
+    elif check_only:
+        print("[check] sem alterações aplicadas; gateway não reiniciado.")
 
     return 0
 
