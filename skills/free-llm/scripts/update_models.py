@@ -119,6 +119,11 @@ NVIDIA_CANDIDATES = [
     "nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia/nemotron-nano-3-30b-a3b",
     "moonshotai/kimi-k2.6",
+    "nvidia/nemotron-3.5-lightning",
+    "nvidia/nemotron-3-mini-4b",
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "nvidia/nemotron-4-mini-hindi-4b-instruct",
+    "nvidia/mistral-nemo-minitron-8b-8k-instruct",
 ]
 
 def get_nvidia_models():
@@ -162,6 +167,59 @@ def get_nous_catalog_ids():
         return []
     nous = data.get("providers", {}).get("nous", {})
     return [m["id"] for m in nous.get("models", [])]
+
+
+# Lista de modelos Nous free conhecidos (verificados por probe)
+NOUS_FREE_CANDIDATES = [
+    "meituan/longcat-2.0:free",
+    "meituan/longcat-2.1:free",
+    "meituan/longcat-3:free",
+    "poolside/laguna-s-2.1:free",
+    "poolside/laguna-xs-2.1:free",
+    "qwen/qwen3-8b:free",
+    "qwen/qwen3-14b:free",
+    "qwen/qwen3-32b:free",
+    "qwen/qwen3-235b-a22b:free",
+    "deepseek-ai/deepseek-r1:free",
+    "deepseek-ai/deepseek-v3:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "meta-llama/llama-3.1-70b-instruct:free",
+    "meta-llama/llama-3.2-1b-instruct:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "google/gemma-2-27b-it:free",
+    "microsoft/phi-3-medium-128k-instruct:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+]
+
+
+def get_nous_free_models():
+    """
+    Retorna modelos Nous free validados por probe (200 response).
+    Usa lista conhecida de candidatos, similar ao NVIDIA.
+    """
+    key = load_key("NOUS_API_KEY")
+    if not key:
+        return []
+
+    import requests
+    out = []
+    for mid in NOUS_FREE_CANDIDATES:
+        try:
+            r = requests.post(
+                "https://inference-api.nousresearch.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": mid, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 8},
+                timeout=20,
+            )
+            if r.status_code == 200:
+                out.append(mid)
+        except Exception:
+            pass
+    return out
 
 # ─── Seleciona por ranking ────────────────────────────────────────────────────
 
@@ -259,30 +317,53 @@ def strip_orphan_nvidia_entries(config_text, orphans):
 
 # ─── Patchers YAML ────────────────────────────────────────────────────────────
 
-def patch_moa_reference_models(config_text, ref_models):
+def patch_moa_reference_models(config_text, ref_models, nous_models=None):
+    """
+    Atualiza reference_models no preset e root.
+    ref_models: lista de modelos NVIDIA (provider: nvidia + base_url)
+    nous_models: lista de modelos Nous (provider: custom + key_env)
+    """
+    if nous_models is None:
+        nous_models = []
+
     # Preset block: 6-space indent for entries
+    preset_entries = []
+    for m in ref_models:
+        preset_entries.append(
+            f"      - provider: nvidia\n        model: {m}\n        base_url: https://integrate.api.nvidia.com/v1\n        enabled: true\n"
+        )
+    for m in nous_models:
+        preset_entries.append(
+            f"      - provider: custom\n        model: {m}\n        base_url: https://inference-api.nousresearch.com/v1\n        key_env: NOUS_API_KEY\n        enabled: true\n"
+        )
+
     new_preset = (
         "  presets:\n    default:\n      reference_models:\n"
-        + "".join(
-            f"      - provider: nvidia\n        model: {m}\n        base_url: https://integrate.api.nvidia.com/v1\n        enabled: true\n"
-            for m in ref_models
-        )
+        + "".join(preset_entries)
     )
     config_text = re.sub(
-        r"  presets:\n    default:\n      reference_models:\n(?:      - provider: \S+\n        model: \S+\n(?:        base_url: \S+\n)?        enabled: (?:true|false)\n)+",
+        r"  presets:\n    default:\n      reference_models:\n(?:      - provider: \S+\n        model: \S+\n(?:        base_url: \S+\n(?:        key_env: \S+\n)?)?        enabled: (?:true|false)\n)+",
         new_preset,
         config_text,
     )
+
     # Root block: 4-space indent for entries
+    root_entries = []
+    for m in ref_models:
+        root_entries.append(
+            f"  - provider: nvidia\n    model: {m}\n    base_url: https://integrate.api.nvidia.com/v1\n    enabled: true\n"
+        )
+    for m in nous_models:
+        root_entries.append(
+            f"  - provider: custom\n    model: {m}\n    base_url: https://inference-api.nousresearch.com/v1\n    key_env: NOUS_API_KEY\n    enabled: true\n"
+        )
+
     new_root = (
         "  reference_models:\n"
-        + "".join(
-            f"  - provider: nvidia\n    model: {m}\n    base_url: https://integrate.api.nvidia.com/v1\n    enabled: true\n"
-            for m in ref_models
-        )
+        + "".join(root_entries)
     )
     config_text = re.sub(
-        r"  reference_models:\n(?:  - provider: \S+\n    model: \S+\n(?:    base_url: \S+\n)?    enabled: (?:true|false)\n)+",
+        r"  reference_models:\n(?:  - provider: \S+\n    model: \S+\n(?:    base_url: \S+\n(?:    key_env: \S+\n)?)?    enabled: (?:true|false)\n)+",
         new_root + "\n",
         config_text,
     )
@@ -344,9 +425,13 @@ def main():
     ref_models    = pick_by_ranking(text_llms, n=2, skip=(default_model,))
     agg_model     = pick_aggregator(text_llms, skip=(default_model, *ref_models))
 
+    # Coletar modelos Nous free para incluir como agentes adicionais no MOA
+    nous_models = get_nous_free_models()
+
     print(f"{LOG_PREFIX} model.default:    {default_model}")
     print(f"{LOG_PREFIX} reference_models: {ref_models}")
     print(f"{LOG_PREFIX} aggregator:       {agg_model}")
+    print(f"{LOG_PREFIX} nous_models:      {nous_models}")
 
     config_text = read_config()
     original    = config_text
@@ -356,7 +441,7 @@ def main():
     config_text, _ = strip_orphan_nvidia_entries(config_text, orphans)
 
     config_text = patch_model_default(config_text, default_model)
-    config_text = patch_moa_reference_models(config_text, ref_models)
+    config_text = patch_moa_reference_models(config_text, ref_models, nous_models)
     config_text = patch_moa_aggregator(config_text, agg_model)
 
     if config_text == original:
