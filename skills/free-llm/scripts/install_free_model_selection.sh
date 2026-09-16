@@ -31,8 +31,7 @@ if [[ ! -d "$HERMES_HOME" ]]; then
 fi
 
 # ─── Diretórios ───────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_SCRIPTS="$SCRIPT_DIR"
+SRC_SCRIPTS="$(cd "$(dirname "$0")/.." && pwd)/pesquisa/scripts"
 DST_SCRIPTS="$HERMES_HOME/scripts"
 DST_CRON="$HERMES_HOME/cron"
 
@@ -42,20 +41,22 @@ echo "  destino: $DST_SCRIPTS"
 
 # ─── Copiar scripts ───────────────────────────────────────────────────────────
 mkdir -p "$DST_SCRIPTS"
-for script in update_free_models.py update_models.py choose_best_free_llm.py; do
-    if [[ -f "$SRC_SCRIPTS/$script" ]]; then
-        cp -v "$SRC_SCRIPTS/$script" "$DST_SCRIPTS/"
-    else
-        echo "  WARN: $script não encontrado em $SRC_SCRIPTS"
-    fi
-done
+cp -v "$SRC_SCRIPTS/update_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
+    cp -v "$(dirname "$0")/update_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
+    echo "  WARN: update_models.py não encontrado no source"
+cp -v "$SRC_SCRIPTS/update_free_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
+    cp -v "$(dirname "$0")/update_free_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
+    echo "  WARN: update_free_models.py não encontrado no source"
+cp -v "$SRC_SCRIPTS/choose_best_free_llm.py" "$DST_SCRIPTS/" 2>/dev/null || \
+    cp -v "$(dirname "$0")/choose_best_free_llm.py" "$DST_SCRIPTS/" 2>/dev/null || \
+    echo "  WARN: choose_best_free_llm.py não encontrado no source"
 
 # ─── Verificar API keys ───────────────────────────────────────────────────────
 echo ""
 echo "=== Verificando API keys no .env do perfil ==="
 ENV_PATH="$HERMES_HOME/.env"
 if [[ -f "$ENV_PATH" ]]; then
-    for key in NVIDIA_API_KEY NOUS_API_KEY CLOUDFLARE_API_TOKEN; do
+    for key in NVIDIA_API_KEY NOUS_API_KEY; do
         if grep -q "^${key}=" "$ENV_PATH" 2>/dev/null; then
             echo "  ✓ $key encontrado"
         else
@@ -123,7 +124,7 @@ if [[ -f "$JOBS_FILE" ]]; then
     EXISTING=$(cat "$JOBS_FILE")
     # Verificar se já existem jobs com os mesmos nomes
     for JOB_NAME in "update-free-models-14h" "choose-best-free-llm" "update-hermes-models"; do
-        if echo "$EXISTING" | grep -q "\"$JOB_NAME\""; then
+        if echo "$EXISTING" | grep -q ""$JOB_NAME""; then
             echo "  ! Job '$JOB_NAME' já existe — não sobrescrevendo"
         fi
     done
@@ -131,10 +132,12 @@ if [[ -f "$JOBS_FILE" ]]; then
     echo "    rm $JOBS_FILE"
 else
     echo "$JOBS" | python3 -c "
-import json, sys, hashlib, time
+import json, sys
 data = json.load(sys.stdin)
+# Gerar IDs únicos para cada job
+import hashlib, time
 for job in data:
-    job['id'] = hashlib.md5(f\"{job['name']}{time.time()}\".encode()).hexdigest()[:12]
+    job['id'] = hashlib.md5(f"{job['name']}{time.time()}".encode()).hexdigest()[:12]
     job['created_at'] = time.strftime('%Y-%m-%dT%H:%M:%S-03:00')
     job['next_run_at'] = None
     job['last_run_at'] = None
