@@ -1,0 +1,101 @@
+# Free LLM Skill — Instalação
+
+Skill para seleção automática de modelos LLM FREE (NVIDIA NIM + Nous Portal)
+via cron jobs no Hermes Agent.
+
+## Instalação Rápida
+
+```bash
+# Clonar o repositório
+git clone https://github.com/falagama-cpu/Hermes.git /tmp/hermes-repo
+
+# Instalar no perfil desejado
+bash /tmp/hermes-repo/skills/free-llm/scripts/install_free_model_selection.sh <profile>
+```
+
+## Pré-requisitos
+
+1. **Hermes Agent** instalado com pelo menos 1 perfil
+2. **API Keys** no `.env` do perfil:
+
+```bash
+# ~/.hermes/profiles/<profile>/.env
+NVIDIA_API_KEY=nvapi-...
+NOUS_API_KEY=sk-nous-...
+```
+
+- NVIDIA: https://integrate.nvidia.com/rocfm/api/key
+- Nous: https://portal.nousresearch.com
+
+## O que o instalador faz
+
+1. Copia os scripts para `~/.hermes/profiles/<profile>/scripts/`
+2. Cria 3 cron jobs no perfil
+3. Verifica se as API keys existem no `.env`
+
+## Cron Jobs Criados
+
+| Job | Horário | Script | O que atualiza |
+|-----|---------|--------|----------------|
+| `update-free-models-14h` | 08:00, 20:00 | `update_free_models.py` | `fallback_providers` |
+| `choose-best-free-llm` | 02:00, 14:00 | `choose_best_free_llm.py` | wrapper |
+| `update-hermes-models` | 09:00, 21:00 | `update_models.py` | `model.default`, `reference_models`, `aggregator` |
+
+## Verificar Instalação
+
+```bash
+# Ver cron jobs
+hermes cron list --profile <profile>
+
+# Rodar manualmente
+HERMES_HOME=~/.hermes/profiles/<profile> python3 ~/.hermes/profiles/<profile>/scripts/update_free_models.py --check
+HERMES_HOME=~/.hermes/profiles/<profile> python3 ~/.hermes/profiles/<profile>/scripts/update_models.py --check
+```
+
+## Desinstalação
+
+```bash
+# Remover scripts
+rm -f ~/.hermes/profiles/<profile>/scripts/update_free_models.py
+rm -f ~/.hermes/profiles/<profile>/scripts/update_models.py
+rm -f ~/.hermes/profiles/<profile>/scripts/choose_best_free_llm.py
+
+# Remover cron jobs (edite jobs.json ou delete)
+rm -f ~/.hermes/profiles/<profile>/cron/jobs.json
+```
+
+## Troubleshooting
+
+**Cron falha com "Network is unreachable":**
+- O perfil não tem acesso à internet no momento do cron
+- Verifique proxy/firewall
+
+**Nenhum modelo NVIDIA encontrado:**
+- `NVIDIA_API_KEY` ausente ou inválida
+- Verifique: `grep NVIDIA_API_KEY ~/.hermes/profiles/<profile>/.env`
+
+**Gateway não reinicia:**
+- O comando `hermes` não está no PATH do ambiente cron
+- Use caminho absoluto: `/usr/local/bin/hermes gateway restart`
+
+**model.default como "default" (string literal):**
+- Indica que `update_models.py` não rodou com sucesso
+- Rode manualmente: `HERMES_HOME=... python3 update_models.py --check`
+
+## Estrutura da Skill
+
+```
+skills/free-llm/
+├── SKILL.md                              # Documentação completa
+└── scripts/
+    ├── install_free_model_selection.sh   # Instalador para qualquer perfil
+    ├── update_free_models.py             # Atualiza fallback_providers (NVIDIA + Nous)
+    ├── update_models.py                  # Atualiza model.default/reference_models/aggregator
+    └── choose_best_free_llm.py           # Thin wrapper (compatibilidade)
+```
+
+## Referências
+
+- NVIDIA NIM: https://docs.nvidia.com/nim/
+- Nous Portal: https://portal.nousresearch.com
+- Hermes Agent: https://hermes-agent.nousresearch.com/docs
