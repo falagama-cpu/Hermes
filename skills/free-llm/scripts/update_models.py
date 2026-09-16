@@ -20,7 +20,7 @@ Atualiza:
   - moa.presets.default.reference_models (top 2 free, filtrado)
   - moa.reference_models                 (mesmos 2, formato root)
   - moa.aggregator                       (próximo não-skip, filtrado)
-  - provider_models_cache.json           (TODOS os free: nvidia + nós)
+  - provider_models_cache.json           (TODOS os free: nvidia + nous)
 
 Reconciliação NVIDIA: qualquer entrada `provider: nvidia` em
 moa.reference_models (raiz ou preset) cujo `model` não exista mais na
@@ -61,7 +61,6 @@ def load_key(env_name: str) -> Optional[str]:
     except OSError:
         pass
     return None
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -261,30 +260,29 @@ def strip_orphan_nvidia_entries(config_text, orphans):
 # ─── Patchers YAML ────────────────────────────────────────────────────────────
 
 def patch_moa_reference_models(config_text, ref_models):
+    # Preset block: 6-space indent for entries
     new_preset = (
-        "      reference_models:\n"
+        "  presets:\n    default:\n      reference_models:\n"
         + "".join(
-            f"        - provider: openrouter\n          model: {m}\n          enabled: true\n"
+            f"      - provider: nvidia\n        model: {m}\n        base_url: https://integrate.api.nvidia.com/v1\n        enabled: true\n"
             for m in ref_models
         )
     )
     config_text = re.sub(
-        r"(  presets:\n    default:\n)"
-        r"      reference_models:\n"
-        r"(?:        - provider: \S+\n          model: .*\n(?:          enabled: (?:true|false)\n)?)+",
-        r"\1" + new_preset,
+        r"  presets:\n    default:\n      reference_models:\n(?:      - provider: \S+\n        model: \S+\n(?:        base_url: \S+\n)?        enabled: (?:true|false)\n)+",
+        new_preset,
         config_text,
     )
+    # Root block: 4-space indent for entries
     new_root = (
         "  reference_models:\n"
         + "".join(
-            f"    - provider: openrouter\n      model: {m}\n      enabled: true\n"
+            f"  - provider: nvidia\n    model: {m}\n    base_url: https://integrate.api.nvidia.com/v1\n    enabled: true\n"
             for m in ref_models
         )
     )
     config_text = re.sub(
-        r"  reference_models:\n"
-        r"(?:    - provider: \S+\n      model: .*\n(?:      enabled: (?:true|false)\n)?)+",
+        r"  reference_models:\n(?:  - provider: \S+\n    model: \S+\n(?:    base_url: \S+\n)?    enabled: (?:true|false)\n)+",
         new_root + "\n",
         config_text,
     )
@@ -292,13 +290,13 @@ def patch_moa_reference_models(config_text, ref_models):
 
 def patch_moa_aggregator(config_text, agg_model):
     config_text = re.sub(
-        r"(      aggregator:\n        provider: openrouter\n        model: ).*",
-        rf"\g<1>{agg_model}",
+        r"(      aggregator:\n        provider: )\S+(\n        model: ).*",
+        rf"\g<1>nvidia\g<2>{agg_model}",
         config_text,
     )
     config_text = re.sub(
-        r"(  aggregator:\n    provider: openrouter\n    model: ).*",
-        rf"\g<1>{agg_model}",
+        r"(  aggregator:\n    provider: )\S+(\n    model: ).*",
+        rf"\g<1>nvidia\g<2>{agg_model}",
         config_text,
     )
     return config_text
@@ -307,11 +305,12 @@ def patch_model_default(config_text, default_model):
     new_block = (
         "model:\n"
         f"  default: {default_model}\n"
-        "  provider: openrouter\n"
+        "  provider: nvidia\n"
         f"  model: {default_model}\n"
+        "  base_url: https://integrate.api.nvidia.com/v1\n"
     )
     config_text = re.sub(
-        r"model:\n  default: [^\n]+\n  provider: [^\n]+\n  model: [^\n]+\n",
+        r"model:\n  default: [^\n]+\n  provider: [^\n]+\n  model: [^\n]+\n(?:  base_url: [^\n]+\n)?",
         new_block,
         config_text,
     )
