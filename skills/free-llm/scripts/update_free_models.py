@@ -69,6 +69,15 @@ NVIDIA_CANDIDATES = [
 # nós free: rotear como custom (provider nativo "nous" exige OAuth)
 NOUS_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
+# Cloudflare AI: modelos free via Workers AI
+CLOUDFLARE_ACCOUNT_ID = "873e5324eb43fe21573205d16ef9212b"
+CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run"
+CLOUDFLARE_CANDIDATES = [
+    "@cf/meta/llama-3.1-8b-instruct",
+    "@cf/google/gemma-7b-it-lora",
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+]
+
 
 def load_key(env_name: str) -> Optional[str]:
     k = os.environ.get(env_name, "").strip()
@@ -183,8 +192,46 @@ def collect_nous(key: str) -> list[dict]:
     return [c for c in out[:PROBE_CAP] if probe(c["base_url"], key, c["model"])]
 
 
-def build_chain(nvidia: list[dict], nous: list[dict]) -> list[dict]:
-    """Cadeia final: nvidia + nous (ordem de preferência).
+def collect_cloudflare(key: str) -> list[dict]:
+    """Sonda modelos Cloudflare AI (Workers AI) e retorna os que responderem 200."""
+    out: list[dict] = []
+    for mid in CLOUDFLARE_CANDIDATES:
+        model_url = f"{CLOUDFLARE_BASE_URL}/{mid}"
+        if not probe_cloudflare(model_url, key, mid):
+            continue
+        out.append({
+            "model": mid,
+            "provider": "custom",
+            "base_url": model_url,
+            "key_env": "CLOUDFLARE_API_TOKEN",
+        })
+    return out
+
+
+def probe_cloudflare(url: str, key: str, model_id: str) -> bool:
+    """Testa um modelo Cloudflare via POST no endpoint /run/{model}."""
+    import requests
+    try:
+        r = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={"messages": [{"role": "user", "content": "ping"}], "max_tokens": 8},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("success"):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def build_chain(nvidia: list[dict], nous: list[dict], cloudflare: list[dict]) -> list[dict]:
+    """Cadeia final: nvidia + nous + cloudflare (ordem de preferência).
 
     Os candidatos JÁ foram validados (probe 200) em collect_*. Aqui só se
     monta a cadeia na ordem de preferência, sem re-fazer requisição."""
@@ -210,6 +257,7 @@ def build_chain(nvidia: list[dict], nous: list[dict]) -> list[dict]:
 
     add(nvidia, 2)
     add(nous, 4)
+    add(cloudflare, 5)
     return chain
 
 
@@ -262,7 +310,12 @@ def main() -> int:
     nous = collect_nous(no_key) if no_key else []
     print(f"  {len(nous)} candidatos free")
 
-    chain = build_chain(nvidia, nous)
+    print("=== cloudflare ===")
+    cf_key = load_key("CLOUDFLARE_API_TOKEN")
+    cloudflare = collect_cloudflare(cf_key) if cf_key else []
+    print(f"  {len(cloudflare)} modelos respondendo")
+
+    chain = build_chain(nvidia, nous, cloudflare)
     if not chain:
         print("[ERRO] nenhum candidato validado — nada alterado.", file=sys.stderr)
         return 1
