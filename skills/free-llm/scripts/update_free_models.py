@@ -38,7 +38,7 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes/profiles
 ENV_PATH = HERMES_HOME / ".env"
 CONFIG_YAML = HERMES_HOME / "config.yaml"
 
-TOP_N = 4                 # quantos fallbacks compõem a cadeia final
+TOP_N = 10                # quantos fallbacks compõem a cadeia final
 PROBE_CAP = 4             # quantos candidatos por fonte sao sondados (ping real)
 MAX_RETRIES = 0           # sem retry: modelo free instavel/lento e melhor pular
 BASE_DELAY = 1.0
@@ -74,8 +74,13 @@ CLOUDFLARE_ACCOUNT_ID = "873e5324eb43fe21573205d16ef9212b"
 CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run"
 CLOUDFLARE_CANDIDATES = [
     "@cf/meta/llama-3.1-8b-instruct",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/meta/llama-3.2-1b-instruct",
+    "@cf/meta/llama-3.2-3b-instruct",
+    "@cf/meta/llama-4-scout-17b-16e-instruct",
     "@cf/google/gemma-7b-it-lora",
     "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    "@cf/mistralai/mistral-small-3.1-24b-instruct",
 ]
 
 
@@ -257,7 +262,7 @@ def build_chain(nvidia: list[dict], nous: list[dict], cloudflare: list[dict]) ->
 
     add(nvidia, 2)
     add(nous, 4)
-    add(cloudflare, 5)
+    add(cloudflare, TOP_N)
     return chain
 
 
