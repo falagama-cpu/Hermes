@@ -31,7 +31,8 @@ if [[ ! -d "$HERMES_HOME" ]]; then
 fi
 
 # ─── Diretórios ───────────────────────────────────────────────────────────────
-SRC_SCRIPTS="$(cd "$(dirname "$0")/.." && pwd)/pesquisa/scripts"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC_SCRIPTS="$SCRIPT_DIR"
 DST_SCRIPTS="$HERMES_HOME/scripts"
 DST_CRON="$HERMES_HOME/cron"
 
@@ -41,22 +42,20 @@ echo "  destino: $DST_SCRIPTS"
 
 # ─── Copiar scripts ───────────────────────────────────────────────────────────
 mkdir -p "$DST_SCRIPTS"
-cp -v "$SRC_SCRIPTS/update_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    cp -v "$(dirname "$0")/update_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    echo "  WARN: update_models.py não encontrado no source"
-cp -v "$SRC_SCRIPTS/update_free_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    cp -v "$(dirname "$0")/update_free_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    echo "  WARN: update_free_models.py não encontrado no source"
-cp -v "$SRC_SCRIPTS/choose_best_free_llm.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    cp -v "$(dirname "$0")/choose_best_free_llm.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    echo "  WARN: choose_best_free_llm.py não encontrado no source"
+for script in update_free_models.py update_models.py choose_best_free_llm.py; do
+    if [[ -f "$SRC_SCRIPTS/$script" ]]; then
+        cp -v "$SRC_SCRIPTS/$script" "$DST_SCRIPTS/"
+    else
+        echo "  WARN: $script não encontrado em $SRC_SCRIPTS"
+    fi
+done
 
 # ─── Verificar API keys ───────────────────────────────────────────────────────
 echo ""
 echo "=== Verificando API keys no .env do perfil ==="
 ENV_PATH="$HERMES_HOME/.env"
 if [[ -f "$ENV_PATH" ]]; then
-    for key in NVIDIA_API_KEY NOUS_API_KEY; do
+    for key in NVIDIA_API_KEY NOUS_API_KEY CLOUDFLARE_API_TOKEN; do
         if grep -q "^${key}=" "$ENV_PATH" 2>/dev/null; then
             echo "  ✓ $key encontrado"
         else

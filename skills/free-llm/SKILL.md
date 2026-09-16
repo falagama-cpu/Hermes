@@ -1,37 +1,47 @@
 ---
 name: free-llm
-description: "Sistema de seleção e troca automática de modelos LLM FREE via cron para qualquer perfil do Hermes Agent. Detecta modelos gratuitos no NVIDIA NIM e Nous Portal, atualiza config.yaml com fallback chain, e reinicia o gateway para assumir novos modelos."
+description: "Sistema de seleção e troca automática de modelos LLM FREE via cron para qualquer perfil do Hermes Agent. Detecta modelos gratuitos no NVIDIA NIM, Nous Portal e Cloudflare Workers AI. Atualiza config.yaml com fallback chain, e reinicia o gateway para assumir novos modelos."
 ---
 
 # Free LLM Selection
 
-Sistema automatizado de seleção e troca de modelos LLM gratuitos entre 2 provedores:
+Sistema automatizado de seleção e troca de modelos LLM gratuitos entre 3 provedores:
 - **NVIDIA NIM** — previews free identificados por probe HTTP (integrate.api.nvidia.com)
 - **Nous Portal** — modelos com tag `:free` autenticados por Bearer key (inference-api.nousresearch.com)
+- **Cloudflare Workers AI** — modelos free via API (api.cloudflare.com) com Bearer token
 
 ## Como funciona
 
 1. O cron roda os scripts em `scripts/` que sondam os provedores via HTTP
 2. Filtram modelos com preço zero ou tag `:free`
 3. Montam uma fallback chain: 2 NVIDIA + slots restantes Nous
-4. Atualizam `config.yaml` (fallback_providers, model.default, reference_models, aggregator)
+4. Atualizam `config.yaml`:
+   - `fallback_providers` (NVIDIA + Nous, agent-managed auth)
+   - `model.default` (NVIDIA only)
+   - `moa.reference_models` (NVIDIA only — NOT Nous)
+   - `moa.aggregator` (NVIDIA only, fixed at `anthropic/claude-sonnet-5`)
 5. Reiniciarem o gateway para aplicar as mudanças
+
+**⚠️ Regra Crítica:** Modelos Nous (`provider: custom` + `key_env: NOUS_API_KEY`) ficam **apenas em `fallback_providers`**, nunca em `moa.reference_models`. O MOA reference_models não resolve `key_env` para providers custom e falha com 401 quando chamados como references. Apenas `fallback_providers` (gerenciado pelo agente) autentica providers custom corretamente.
 
 ## Pré-requisitos
 
 - Hermes Agent instalado com pelo menos 1 perfil
 - `NVIDIA_API_KEY` no `.env` do perfil (obter em https://integrate.nvidia.com)
 - `NOUS_API_KEY` no `.env` do perfil (obter em https://inference-api.nousresearch.com)
+- `CLOUDFLARE_API_TOKEN` no `.env` do perfil (obter em https://dash.cloudflare.com/profile/api-tokens)
 
 ## Instalação
 
 ```bash
-# Instalar no perfil atual
-bash scripts/install_free_model_selection.sh <profile>
+# Clonar o repositório
+git clone https://github.com/falagama-cpu/Hermes.git /tmp/hermes-repo
 
-# Instalar em perfil específico
-bash scripts/install_free_model_selection.sh pesquisa
+# Instalar no perfil desejado
+bash /tmp/hermes-repo/skills/free-llm/scripts/install_free_model_selection.sh <profile>
 ```
+
+**Nota:** O instalador detecta automaticamente o perfil ativo se nenhum argumento for passado.
 
 O script de instalação:
 - Copia os scripts para `~/.hermes/profiles/<profile>/scripts/`
@@ -56,7 +66,8 @@ O script de instalação:
 
 ### `update_models.py`
 - Sonda NVIDIA previews para identificar modelos ativos
-- Seleciona `model.default` (primeiro de alta prioridade), `reference_models` (top 2), `aggregator` (próximo não-blacklist)
+- Sonda Nous free candidates para cache (não para reference_models)
+- Seleciona `model.default` (primeiro NVIDIA de alta prioridade), `reference_models` (top 2 NVIDIA), `aggregator` (próximo não-blacklist)
 - Reconhece e remove entradas NVIDIA órfãs em `moa.reference_models`
 - Atualiza cache de modelos (`provider_models_cache.json`)
 - Reinicia o gateway ao final
@@ -109,11 +120,11 @@ Se o gateway não estiver rodando, o `restart` falha silenciosamente (exit code 
 
 **Gateway não reinicia:**
 - O comando `hermes` não está no PATH do ambiente cron
-- Use caminho absoluto: `/usr/local/bin/hermes gateway restart`
+- Use caminho absoluto: `$(which hermes) gateway restart`
 
 **model.default como "default" (string literal):**
 - Indica que `update_models.py` não rodou com sucesso
-- Rode manualmente: `HERMES_HOME=... python3 update_models.py --check`
+- Rode manualmente: `HERMES_HOME=$HOME/.hermes/profiles/<profile> python3 update_models.py --check`
 
 ## Desinstalação
 
