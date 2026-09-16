@@ -3,8 +3,8 @@
 modelo free e gravar fallback_providers no config.yaml.
 
 STATUS: descontinuado como lógica própria. A selecao (ping 200 + ranking por
-contexto DESC + gravacao de fallback_providers) foi consolidada e melhorada no
-update_free_models.py, que cobre os TRES provedores (OpenRouter, NVIDIA, Nous)
+gravidade + gravacao de fallback_providers) foi consolidada e melhorada no
+update_free_models.py, que cobre os 2 provedores (NVIDIA, Nous)
 e roda as 14:00.
 
 Este arquivo existe apenas para o job 'choose-best-free-llm' (0 2 * * *) nao
