@@ -56,7 +56,7 @@ echo ""
 echo "=== Verificando API keys no .env do perfil ==="
 ENV_PATH="$HERMES_HOME/.env"
 if [[ -f "$ENV_PATH" ]]; then
-    for key in NVIDIA_API_KEY NOUS_API_KEY; do
+    for key in NVIDIA_API_KEY OPENROUTER_API_KEY NOUS_API_KEY CLOUDFLARE_API_TOKEN; do
         if grep -q "^${key}=" "$ENV_PATH" 2>/dev/null; then
             echo "  ✓ $key encontrado"
         else
