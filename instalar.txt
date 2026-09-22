@@ -77,6 +77,56 @@ rm -f ~/.hermes/profiles/<profile>/cron/jobs.json
 **Gateway não reinicia:**
 - O comando `hermes` não está no PATH do ambiente cron
 - Use caminho absoluto: `/usr/local/bin/hermes gateway restart`
+- Dentro do cron do gateway, `hermes gateway restart` retorna rc=78 (o gateway não
+  reinicia a si mesmo a partir de dentro). Para reiniciar via cron é preciso
+  um wrapper externo (systemd/tmux) ou reinício manual.
+
+## Gateway na inicialização do sistema (systemd user)
+
+Para o gateway do perfil iniciar automaticamente no login (independente do cron):
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/hermes-gateway-<profile>.service << 'EOF'
+[Unit]
+Description=Hermes Gateway for <profile> profile
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hermes -p <profile> gateway start
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=3
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-gateway-<profile>.service
+```
+
+Gerenciar o serviço:
+
+```bash
+systemctl --user status  hermes-gateway-<profile>.service   # status
+systemctl --user stop    hermes-gateway-<profile>.service   # parar
+systemctl --user start   hermes-gateway-<profile>.service   # iniciar
+journalctl --user -u hermes-gateway-<profile>.service -f    # logs
+```
+
+Notas:
+- Roda em nível de usuário (sem sudo), sob `$USER`, com o mesmo
+  `HERMES_HOME=~/.hermes/profiles/<profile>` do uso normal
+- `Restart=on-failure` + `RestartSec=5`: reinicia 5s após falha,
+  no máximo 3 tentativas por minuto (`StartLimitBurst=3`)
+- Não exige lingering: o serviço sobe no login gráfico/terminal do usuário
+- Para rodar sem login (headless), habilite lingering:
+  `sudo loginctl enable-linger $USER`
 
 **model.default como "default" (string literal):**
 - Indica que `update_models.py` não rodou com sucesso
