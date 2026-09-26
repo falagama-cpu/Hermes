@@ -577,10 +577,19 @@ def main():
         write_config(config_text)
         print(f"{LOG_PREFIX} config.yaml atualizado!")
 
-    # Reinicia o gateway para que as novas seleções de modelo entrem em efeito
+    # Reinicia o gateway (host gateway via systemd, não por perfil)
     print("[acao] reiniciando gateway para assumir novos modelos...")
     import subprocess
-    subprocess.run(["hermes", "gateway", "restart"], capture_output=True, timeout=30)
+    # Tenta systemctl --user primeiro (mais confiável no cron)
+    r = subprocess.run(
+        ["systemctl", "--user", "restart", "hermes-gateway.service"],
+        capture_output=True, timeout=30,
+    )
+    if r.returncode != 0:
+        # Fallback: hermes gateway restart com HERMES_HOME do host
+        import os
+        env = {**os.environ, "HERMES_HOME": str(Path.home() / ".hermes")}
+        subprocess.run(["hermes", "gateway", "restart"], capture_output=True, timeout=30, env=env)
 
     print(f"{LOG_PREFIX} concluído.")
 
