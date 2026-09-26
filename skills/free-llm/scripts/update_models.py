@@ -475,17 +475,21 @@ def patch_moa_aggregator(config_text, agg_model):
     return config_text
 
 def patch_model_default(config_text, default_model):
+    # Substitui o bloco model: { default, provider, base_url, [api_mode] }
+    # A estrutura real do config NÃO tem linha "model: X" dentro do bloco —
+    # apenas default, provider, base_url e opcionalmente api_mode.
     new_block = (
         "model:\n"
         f"  default: {default_model}\n"
         "  provider: nvidia\n"
-        f"  model: {default_model}\n"
         "  base_url: https://integrate.api.nvidia.com/v1\n"
     )
+    # Cobre estruturas com ou sem api_mode após base_url
     config_text = re.sub(
-        r"model:\n  default: [^\n]+\n  provider: [^\n]+\n  model: [^\n]+\n(?:  base_url: [^\n]+\n)?",
+        r"model:\n  default: [^\n]+\n  provider: [^\n]+\n(?:  model: [^\n]+\n)?(?:  base_url: [^\n]+\n)?(?:  api_mode: [^\n]+\n)?",
         new_block,
         config_text,
+        count=1,
     )
     return config_text
 
