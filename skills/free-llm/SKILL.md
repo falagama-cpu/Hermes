@@ -1,96 +1,187 @@
 ---
-name: free-model-selection
-description: "Free LLM model selection across providers via cron."
+name: free-llm
+description: "Sistema de seleção e troca automática de modelos LLM FREE via cron para qualquer perfil do Hermes Agent. Detecta modelos gratuitos no OpenRouter, NVIDIA NIM, Nous Portal e Cloudflare Workers AI. Atualiza config.yaml com fallback chain, e reinicia o gateway para assumir novos modelos."
 ---
 
-# Free Model Selection
+# Free LLM Selection
 
-## Overview
-Maintaining an up-to-date list of free LLM models across **4 providers** (NVIDIA NIM, Nous Portal, OpenRouter, Cloudflare Workers AI) with cron-based selection and fallback chain configuration in `~/.hermes/profiles/pesquisa/config.yaml`.
+Sistema automatizado de seleção e troca de modelos LLM gratuitos entre 4 provedores:
+- **OpenRouter** — modelos `:free` ou pricing 0 via catálogo `/models`, validados por probe HTTP
+- **NVIDIA NIM** — previews free identificados por probe HTTP (integrate.api.nvidia.com)
+- **Nous Portal** — modelos com tag `:free` autenticados por Bearer key (inference-api.nousresearch.com)
+- **Cloudflare Workers AI** — modelos free via API (api.cloudflare.com) com Bearer token
 
-## Scripts & What They Write
+## Como funciona
 
-| Script | Cron schedule | Writes to config.yaml |
-|--------|---------------|-----------------------|
-| `update_free_models.py` | 08:00, 20:00 | `fallback_providers` only |
-| `choose_best_free_llm.py` | 02:00, 14:00 | Thin wrapper → `update_free_models.py` |
-| `update_models.py` | 09:00, 21:00 | `model.default`, `moa.presets.default.reference_models`, `moa.reference_models`, `moa.aggregator` |
+1. O cron roda os scripts em `scripts/` que sondam os provedores via HTTP
+2. Filtram modelos com preço zero ou tag `:free`
+3. Montam uma fallback chain na ordem: NVIDIA → OpenRouter → Nous → Cloudflare (até `TOP_N`)
+4. Atualizam `config.yaml`:
+   - `fallback_providers` (OpenRouter + NVIDIA + Nous + Cloudflare, agent-managed auth quando aplicável)
+   - `model.default` (NVIDIA only, text-only)
+   - `moa.reference_models` (NVIDIA only, text-only — NOT Nous/Cloudflare)
+   - `moa.aggregator` (**multimodal MoE preferencial** quando disponível no NIM: `moonshotai/kimi-k3`, `z-ai/glm-5-3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `meta/muse-glimmer-30b`; caso contrário text-only high-priority NVIDIA)
+5. Reiniciam o gateway para aplicar as mudanças
 
-Scripts live in `~/.hermes/profiles/pesquisa/scripts/`.
+**⚠️ Regra Crítica:** Modelos Nous e Cloudflare (`provider: custom` + `key_env`) ficam **apenas em `fallback_providers`**, nunca em `moa.reference_models`. O MOA reference_models não resolve `key_env` para providers custom corretamente. Além disso, Cloudflare Workers AI usa endpoint `/ai/run/@cf/...`, que não é OpenAI-compatible; só promover Cloudflare para rota principal/MOA se houver adaptador/provider OpenAI-compatible validado end-to-end.
 
-**Note**: The cron job for `update_models.py` actually runs via a wrapper script (`update_models_wrapper.sh`) that attempts to restart the gateway after a successful update. Due to gateway process constraints, the restart may fail with rc=78 when attempted from within the cron context, but the signal is still sent.
+**Cloudflare Workers AI:** O token atual (`CLOUDFLARE_API_TOKEN`) não tem escopoAccount ID necessário para o endpoint OpenAI-compatível (`api.cloudflare.com/client/v4/accounts/{id}/ai/v1`). O usuário quer Cloudflare no fallback chain quando configurado, mas requer: (1) `CLOUDFLARE_ACCOUNT_ID` no `.env`, (2) token com escopo `AI Gateway:Read`, (3) gateway criado via `gateway.ai.cloudflare.com`.
 
-## Config Key Map
-See `references/config-keys.md` for which keys each script writes and their format.
+## Pré-requisitos
 
-## Testing Procedure
-1. Probe each provider's free model endpoint with HTTP ping (not catalog parse)
-2. Filter by price == 0 / `:free` tag per provider's convention
-3. Rank by context window descending
-4. Build fallback chain: top N free models across all sources, deduplicated by normalized model ID
-5. Report: chosen models, overlaps/conflicts between providers, any source returning 4xx/5xx
+- Hermes Agent instalado com pelo menos 1 perfil
+- `NVIDIA_API_KEY` no `.env` do perfil (obter em https://integrate.nvidia.com)
+- `NOUS_API_KEY` no `.env` do perfil (obter em https://inference-api.nousresearch.com)
+- `CLOUDFLARE_API_TOKEN` no `.env` do perfil (obter em https://dash.cloudflare.com/profile/api-tokens)
+- `OPENROUTER_API_KEY` no `.env` do perfil (obter em https://openrouter.ai/keys)
 
-## Provider Diversity Rule
-- **Minimum 2 providers** in model.default + reference_models + aggregator
-- Round-robin selection: pick best model from each provider first, then fill remaining slots by context
-- Never select all models from a single provider (avoids single-point-of-failure)
+## Instalação
 
-## Retry Policy
-- **Transient errors** (429, 500, 502, 503, 504): retry with exponential backoff (2s, 4s, 8s). Max 3 retries.
-- **Permanent errors** (400, 401, 403, 404, 410): log and skip immediately, no retry
-- **Network errors**: same retry policy as transient
+```bash
+# Clonar o repositório
+git clone https://github.com/falagama-cpu/Hermes.git /tmp/hermes-repo
 
-## Verification
-- **NVIDIA**: probe 200 response (catalog doesn't expose pricing)
-- **OpenRouter**: pricing.prompt=0 AND pricing.completion=0
-- **Nous Portal**: pricing.prompt=0 AND pricing.completion=0 + probe 200
-- **Cloudflare**: probe 200 response (free, no billing)
+# Instalar no perfil desejado
+bash /tmp/hermes-repo/skills/free-llm/scripts/install_free_model_selection.sh <profile>
+```
 
-## Adding a New Provider
+**Nota:** O instalador detecta automaticamente o perfil ativo se nenhum argumento for passado.
 
-When integrating a new free-model provider:
+O script de instalação:
+- Copia os scripts para `~/.hermes/profiles/<profile>/scripts/`
+- Cria 3 cron jobs no perfil
+- Verifica se as API keys existem no `.env`
 
-### For `update_free_models.py` (writes to fallback_providers):
-1. **Add provider constants** after the existing `NOUS_BASE_URL` block: `PROVIDER_CANDIDATES` list, base URL (possibly a template with env vars), and the env var name for the API key.
-2. **Create a `collect_<provider>()` function** that:
-   - Loads the API key via `load_key("ENV_NAME")`
-   - Returns `[]` immediately if key is missing (fail-soft)
-   - Probes each candidate model via `_request()`
-   - **Checks response format carefully** — some providers return `{success: false, errors: [...]}` wrappers but still include a valid OpenAI-shaped body with `choices` / `id`. Verify `data.get("choices")` OR `(data.get("id") and data.get("object") == "chat.completion")` before declaring success.
-   - Appends `{model, provider: "custom", base_url, key_env: "ENV_NAME"}` for each working model
-3. **Call the collector in `main()`** and pass the result to `build_chain(nvidia, nous, <provider>)`.
-4. **Extend `build_chain()`** to accept and add the new source (it already does for cloudflare).
-5. **Test with `--check` first**, then run without it to apply.
+## Cron Jobs
 
-### For `update_models.py` (writes to model.default, MOA reference models, and MOA aggregator):
-1. **Add provider constants** in the appropriate section (after NVIDIA_CANDIDATES, etc.)
-2. **Create a `get_<provider>_models()` function** that:
-   - Loads the API key via `load_key("ENV_NAME")`
-   - Returns `[]` immediately if key is missing (fail-soft)
-   - Fetches the model list from the provider's API
-   - Filters for free models (pricing=0 or probe 200)
-   - Validates model format (text LLM, not agent/audio/etc.)
-   - Returns list of dicts with `id`, `provider`, `base_url`, `context`, and optionally `key_env`
-3. **Call the collector in `main()`** and add its result to the combined model list
-4. **The provider diversity logic** in `pick_diverse_models()` automatically handles distribution across providers
+| Job | Horário | Script | O que atualiza |
+|-----|---------|--------|----------------|
+| `update-free-models-14h` | 08:00, 20:00 | `update_free_models.py` | `fallback_providers` |
+| `choose-best-free-llm` | 02:00, 14:00 | `choose_best_free_llm.py` | wrapper para o anterior |
+| `update-hermes-models` | 09:00, 21:00 | `update_models.py` | `model.default`, `reference_models`, `aggregator` |
 
-Providers added to `update_free_models.py` appear only in `fallback_providers`.
-Providers added to `update_models.py` can appear in `model.default`, `moa.reference_models`, `moa.presets.default.reference_models`, or `moa.aggregator` (subject to diversity and quality filters).
+## Scripts
 
-Scripts live in `~/.hermes/profiles/pesquisa/scripts/`.
+### `update_free_models.py`
+- Sonda OpenRouter (catálogo `:free`/pricing 0), NVIDIA (candidatos conhecidos de previews free), Nous (catálogo com filtro :free) e Cloudflare Workers AI
+- Monta fallback chain na ordem atual: NVIDIA primeiro, depois OpenRouter, depois Nous, depois Cloudflare até `TOP_N`
+- Atualiza `fallback_providers` no config.yaml
+- Reinicia o gateway ao final
 
-**Note**: The cron job for `update_models.py` actually runs via a wrapper script (`update_models_wrapper.sh`) that attempts to restart the gateway after a successful update. Due to gateway process constraints, the restart may fail with rc=78 when attempted from within the cron context, but the signal is still sent.
+### `update_models.py`
+- Sonda NVIDIA previews (lista `NVIDIA_CANDIDATES` hardcoded) via probe HTTP 200 em `integrate.api.nvidia.com/v1`
+- Sonda Nous Portal catálogo (`model-catalog.json`) + valida candidatos free conhecidos (`NOUS_FREE_CANDIDATES`) via probe 200
+- **NVIDIA by design**: `model.default`, `moa.reference_models` (preset + root) são **exclusivamente NVIDIA text-only**
+- **Aggregator multimodal**: o `moa.aggregator` pode ser um modelo multimodal MoE (ex.: `moonshotai/kimi-k3`, `z-ai/glm-5-3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `meta/muse-glimmer-30b`) quando disponível no NIM; caso contrário cai em text-only high-priority NVIDIA
+- Ranking: probe 200 → separa text-only vs multimodal → model.default/ref_models = text-only high-priority → aggregator = multimodal preferencial → fallback text-only high-priority
+- Reconciliação: remove entradas `provider: nvidia` órfãs (que saíram da lista NIM atual) do `moa.reference_models` (preset e root) antes de reescrever
+- Atualiza cache `provider_models_cache.json` (NVIDIA + Nous)
+- Patch YAML via regex (não via PyYAML) — mantém formatação/anchors do config; regex atualizados para indentation real do config (8 spaces para preset, anchor `&id001`)
+- Reinicia gateway (`hermes gateway restart`) ao final
 
-## Pitfalls
+**Nota (set/2026, alinhado com falagama-cpu/Hermes):** O script **não** fixa o aggregator em `anthropic/claude-sonnet-5`. O aggregator é selecionado automaticamente:
+- **Multimodal MoE preferencial** (se disponível no NIM): `moonshotai/kimi-k3`, `z-ai/glm-5-3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `meta/muse-glimmer-30b`
+- **Fallback**: text-only high-priority NVIDIA (próximo após default+refs, ex.: `deepseek-ai/deepseek-v4-flash-0731`)
 
-### General
-- **`choose-best-free-llm` and `update-free-models-14h` are redundant** — both execute `update_free_models.py`.
-- **Scripts write non-overlapping but semantically linked keys**: `update_models.py` writes `model.default`, `moa.reference_models`, `moa.aggregator`; `update_free_models.py` writes `fallback_providers`. Not auto-synced — changes in one don't propagate to the other.
-- **Provider inference is canonical**: All scripts use `_infer_provider()` (`nvidia/` → nvidia, `meituan/` → custom) and `_provider_base_url()`. Never hardcode `provider: openrouter`.
-- **NVIDIA probe empty = fail-soft**: If `update_models.py` gets 0 NVIDIA candidates, keep the current `config.yaml` and exit 0. Do not mark cron failed for transient outages.
+Nous/Cloudflare aparecem **apenas** em `fallback_providers` via `update_free_models.py`.
 
-### Provider-Specific
-- **Cloudflare response validation**: CF returns `{success: false, errors: [...]}` wrapper but the OpenAI-shaped body with `choices`/`id`/`object: "chat.completion"` is still valid. Check for `choices` or `(id + object == "chat.completion")` before declaring failure. The old token (`CLOUDFLARE_API_TOKEN`) lacked API scope — needs `CLOUDFLARE_ACCOUNT_ID` in `.env` and token with `AI Gateway:Read` scope.
-- **MOA selection is NVIDIA by design**: `update_models.py` probes NVIDIA only for `model.default`, MOA reference models, and MOA aggregator. Nous/Cloudflare models appear only in `fallback_providers` via `update_free_models.py`.
-- **Nous Portal requires API key**: Without `NOUS_API_KEY`, Nous appears to have 0 free models. Uses `inference-api.nousresearch.com` with Bearer auth.
-- **NVIDIA free ≠ catalog pricing**: Free models identified by probing candidates at `integrate.api.nvidia.com` — the catalog doesn't expose pricing.
+### `choose_best_free_llm.py`
+- Thin wrapper que chama `update_free_models.py` (mantido para compatibilidade com cron antigo)
+
+## Config Keys Atualizadas
+
+| Key | Formato | Escrito por |
+|-----|---------|-------------|
+| `fallback_providers` | lista de `{provider, model, base_url, key_env?}` | `update_free_models.py` |
+| `model.default` | string (model ID) | `update_models.py` |
+| `moa.presets.default.reference_models` | lista de `{provider, model, enabled}` | `update_models.py` |
+| `moa.reference_models` (root) | mesmo formato acima | `update_models.py` |
+| moa.aggregator | {provider, model} | `update_models.py` — **multimodal MoE preferencial** (ex.: `moonshotai/kimi-k3`, `z-ai/glm-5-3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `meta/muse-glimmer-30b`) quando disponível no NIM; caso contrário text-only high-priority NVIDIA (próximo após default+refs) |
+
+**Nota:** `moa.aggregator` é NVIDIA (ex.: `deepseek-ai/deepseek-v4-flash-0731`), **não** fixo em `anthropic/claude-sonnet-5`. O script `update_models.py` seleciona automaticamente. Nous/Cloudflare ficam apenas em `fallback_providers`.
+
+## API Keys Necessárias
+
+```
+# Em ~/.hermes/profiles/<profile>/.env
+NVIDIA_API_KEY=nvapi-...
+NOUS_API_KEY=sk-nous-...
+OPENROUTER_API_KEY=sk-or-v1-...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Obter em:
+- NVIDIA: https://integrate.nvidia.com/rocfm/api/key (conta NVIDIA gratuita)
+- Nous: https://portal.nousresearch.com (conta Nous Research)
+- OpenRouter: https://openrouter.ai/keys (conta OpenRouter gratuita)
+- Anthropic: https://console.anthropic.com/ (conta Anthropic)
+
+## Gateway Restart
+
+Os scripts automaticamente executam `hermes gateway restart` ao final de cada atualização bem-sucedida. Isso garante que:
+- O novo `model.default` seja carregado
+- A nova `fallback_providers` seja usada
+- Os novos `reference_models` entrem em efeito
+- O `moa.aggregator` selecionado (multimodal ou text-only) entre em efeito
+
+Se o gateway não estiver rodando, o `restart` falha silenciosamente (exit code ≠ 0) mas o script continua.
+
+## Troubleshooting
+
+**Cron falha com "Network is unreachable":**
+- O perfil não tem acesso à internet no momento do cron
+- Verifique proxy/firewall
+
+**Nenhum modelo NVIDIA encontrado:**
+- `NVIDIA_API_KEY` ausente ou inválida
+- Verifique: `grep NVIDIA_API_KEY ~/.hermes/profiles/<profile>/.env`
+
+**Gateway não reinicia:**
+- O comando `hermes` não está no PATH do ambiente cron
+- Use caminho absoluto: `$(which hermes) gateway restart`
+
+**`update-hermes-models` falha com `ERRO: sem modelos free`:**
+- Isso indica probe NVIDIA vazio no horário do cron, geralmente falha transitória de rede/provider.
+- O script **é fail-soft**: se `get_nvidia_models()` retorna vazio, mantém o config atual e sai 0 (não quebra o cron).
+
+**`ModuleNotFoundError: No module named 'requests'` nos crons:**
+- O ambiente do cron não tem o módulo `requests` instalado
+- Instale no diretório dos scripts do perfil: `pip3 install requests --target=/home/fabio/.hermes/profiles/<profile>/scripts/`
+- O script original usa `urllib` (stdlib), mas as versões atuais usam `requests` para timeout total confiável
+
+**Regex de patch YAML sensível à indentação:**
+- O `patch_moa_aggregator()` usa regex ancorado no anchor YAML `&id001` (preset) e na indentação real do config (8 spaces para provider/model sob `presets.default.aggregator`)
+- Se a estrutura do config.yaml mudar (ex.: anchor removido, indentação alterada), o regex falha silenciosamente
+- Verifique com: `grep -n 'aggregator: &id001' config.yaml` antes de rodar o script
+
+**NVIDIA NIM rate limit** (conta falagama@gmail.com): até **40 rpm**. Os scripts sondam ~19 req/run no `update_free_models` e ~12 no `update_models` — dentro do limite para run isolado. Não agrupe runs no mesmo minuto (crons já espaçados).
+
+**model.default como "default" (string literal):**
+- Indica que `update_models.py` não rodou com sucesso
+- Rode manualmente: `HERMES_HOME=$HOME/.hermes/profiles/<profile> python3 update_models.py --check`
+
+**moa.aggregator não é um multimodal MoE esperado:**
+- Indica que nenhum modelo multimodal MoE estava disponível no NIM no momento do probe
+- O script cai no fallback text-only high-priority NVIDIA (ex.: `deepseek-ai/deepseek-v4-flash-0731`)
+- Para forçar multimodal: adicione o modelo desejado em `MULTIMODAL_AGG_CANDIDATES` e `NVIDIA_CANDIDATES` no script
+- Verifique disponibilidade: `HERMES_HOME=$HOME/.hermes/profiles/<profile> python3 -c "from scripts.update_models import get_nvidia_models; import os; print([m['id'] for m in get_nvidia_models() if 'kimi-k3' in m['id'] or 'glm-5-3' in m['id'] or 'v4.1-flash' in m['id'] or 'nano-omni' in m['id'] or 'muse-glimmer' in m['id']])"`
+
+## Desinstalação
+
+```bash
+# Remover scripts
+rm -f ~/.hermes/profiles/<profile>/scripts/update_free_models.py
+rm -f ~/.hermes/profiles/<profile>/scripts/update_models.py
+rm -f ~/.hermes/profiles/<profile>/scripts/choose_best_free_llm.py
+
+# Remover cron jobs
+# Edite ~/.hermes/profiles/<profile>/cron/jobs.json e remova os 3 jobs
+# Ou simplesmente delete jobs.json e recrie os jobs manualmente
+```
+
+## Referências
+
+- [NVIDIA NIM Documentation](https://docs.nvidia.com/nim/)
+- [Nous Portal](https://portal.nousresearch.com)
+- [OpenRouter Documentation](https://openrouter.ai/docs)
+- [Hermes Agent Docs](https://hermes-agent.nousresearch.com/docs)
