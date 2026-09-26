@@ -109,9 +109,33 @@ def is_high_priority(model_id: str) -> bool:
     low = model_id.lower()
     return not any(marker in low for marker in LOW_PRIORITY_MARKERS)
 
+# Multimodal models allowed ONLY for aggregator (not model.default / reference_models)
+# NIM candidates (probed via integrate.api.nvidia.com)
+MULTIMODAL_AGG_CANDIDATES_NIM = [
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5-3-flash",
+    "deepseek-ai/deepseek-v4.1-flash",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "meta/muse-glimmer-30b",
+]
+# OpenRouter candidates (probed via openrouter.ai — `:free` suffix required)
+# ordered by preference
+MULTIMODAL_AGG_CANDIDATES_OR = [
+    "deepseek-ai/deepseek-v4.1-flash:free",
+    "z-ai/glm-5-3-flash:free",
+    "moonshotai/kimi-k3:free",
+]
+# unified set for is_multimodal_agg_candidate check (strip :free for normalisation)
+MULTIMODAL_AGG_CANDIDATES = MULTIMODAL_AGG_CANDIDATES_NIM + MULTIMODAL_AGG_CANDIDATES_OR
+
+def is_multimodal_agg_candidate(model_id: str) -> bool:
+    """Check if model is a multimodal candidate suitable for aggregator."""
+    return model_id in MULTIMODAL_AGG_CANDIDATES
+
 # ─── NVIDIA NIM: candidatos a sondar (previews free) ──────────────────────────
 
 NVIDIA_CANDIDATES = [
+    # Text-only high-priority (para model.default + reference_models)
     "minimaxai/minimax-m3",
     "deepseek-ai/deepseek-v4-flash-0731",
     "deepseek-ai/deepseek-v4-pro-0813",
@@ -124,6 +148,12 @@ NVIDIA_CANDIDATES = [
     "nvidia/llama-3.1-nemotron-70b-instruct",
     "nvidia/nemotron-4-mini-hindi-4b-instruct",
     "nvidia/mistral-nemo-minitron-8b-8k-instruct",
+    # Multimodal MoE (apenas para aggregator)
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5-3-flash",
+    "deepseek-ai/deepseek-v4.1-flash",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "meta/muse-glimmer-30b",
 ]
 
 def get_nvidia_models():
@@ -154,7 +184,53 @@ def get_nvidia_models():
             pass
     return out
 
+# Separate text-only and multimodal models for proper selection
+def filter_text_only_models(models):
+    """Filter to only text-only models (exclude multimodal)."""
+    multimodal_ids = set(MULTIMODAL_AGG_CANDIDATES)
+    return [m for m in models if m["id"] not in multimodal_ids]
+
+def filter_multimodal_models(models):
+    """Filter to only multimodal models (for aggregator)."""
+    multimodal_ids = set(MULTIMODAL_AGG_CANDIDATES)
+    return [m for m in models if m["id"] in multimodal_ids]
+
 # ─── Nous Portal (catálogo — validação, não ranking) ──────────────────────────
+
+def get_openrouter_multimodal_models():
+    """
+    Sonda candidatos multimodal MoE no OpenRouter (endpoint free).
+    Retorna lista de dicts {id, name, ctx} para os que respondem 200.
+    IDs incluem sufixo ':free' para routing correto no OpenRouter.
+    """
+    key = load_key("OPENROUTER_API_KEY")
+    if not key:
+        return []
+
+    import requests
+    out = []
+    for mid in MULTIMODAL_AGG_CANDIDATES_OR:
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                },
+                json={"model": mid, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+                timeout=20,
+            )
+            if r.status_code in (200, 400):  # 400 = model exists but rejects text-only (multimodal)
+                out.append({"id": mid, "name": mid, "ctx": 0})
+                status_note = "OK" if r.status_code == 200 else "available (multimodal-only)"
+                print(f"{LOG_PREFIX} OR multimodal {status_note}: {mid}")
+            else:
+                print(f"{LOG_PREFIX} OR multimodal {mid}: {r.status_code}", file=sys.stderr)
+        except Exception as e:
+            print(f"{LOG_PREFIX} OR multimodal {mid}: {e}", file=sys.stderr)
+    return out
+
 
 def get_nous_catalog_ids():
     """
@@ -236,6 +312,13 @@ def pick_by_ranking(text_llms, n, skip=()):
     return out
 
 def pick_aggregator(text_llms, skip=()):
+    # Primeiro tenta multimodal candidates (alta prioridade para aggregator)
+    for m in text_llms:
+        if m["id"] in skip:
+            continue
+        if is_multimodal_agg_candidate(m["id"]):
+            return m["id"]
+    # Fallback: text-only high-priority
     for m in text_llms:
         if m["id"] in skip:
             continue
@@ -244,6 +327,7 @@ def pick_aggregator(text_llms, skip=()):
         if not is_high_priority(m["id"]):
             continue
         return m["id"]
+    # Último recurso: qualquer text_llm não usado
     for m in text_llms:
         if m["id"] not in skip:
             return m["id"]
@@ -352,16 +436,42 @@ def patch_moa_reference_models(config_text, ref_models):
     return config_text
 
 def patch_moa_aggregator(config_text, agg_model):
+    # Determine provider from model ID
+    # Models with :free suffix are OpenRouter
+    if agg_model.endswith(":free"):
+        provider = "openrouter"
+        base_url = "https://openrouter.ai/api/v1"
+    elif agg_model.startswith("nvidia/"):
+        provider = "nvidia"
+        base_url = "https://integrate.api.nvidia.com/v1"
+    elif agg_model.startswith(("moonshotai/", "z-ai/", "deepseek-ai/", "meta/", "minimaxai/")):
+        provider = "nvidia"  # via NIM
+        base_url = "https://integrate.api.nvidia.com/v1"
+    else:
+        provider = "nvidia"
+        base_url = "https://integrate.api.nvidia.com/v1"
+    
+    # Preset block (8-space indent for provider/model under presets.default.aggregator)
     config_text = re.sub(
-        r"(      aggregator:\n        provider: )\S+(\n        model: ).*",
-        rf"\g<1>nvidia\g<2>{agg_model}",
+        r"(      aggregator: &id001\n        provider: )\S+(\n        model: )\S+",
+        rf"\g<1>{provider}\g<2>{agg_model}",
         config_text,
     )
     config_text = re.sub(
-        r"(  aggregator:\n    provider: )\S+(\n    model: ).*",
-        rf"\g<1>nvidia\g<2>{agg_model}",
+        r"(      aggregator: &id001\n        provider: \S+\n        model: \S+\n        base_url: )\S+",
+        rf"\g<1>{base_url}",
         config_text,
     )
+    
+    # Root block (2-space indent for provider/model under moa.aggregator)
+    config_text = re.sub(
+        r"(  aggregator: \*id001\n  reference_temperature: )\S+",
+        r"\g<1>0.6",  # keep reference_temperature
+        config_text,
+    )
+    # The root aggregator is a YAML anchor reference (*id001), so we don't change it directly
+    # It's updated via the preset block above
+    
     return config_text
 
 def patch_model_default(config_text, default_model):
@@ -379,6 +489,22 @@ def patch_model_default(config_text, default_model):
     )
     return config_text
 
+# ─── Guarda: garante que nenhum modelo pago entre no config ───────────────────
+
+# Prefixos de provedores pagos que NUNCA devem aparecer como default/refs/aggregator
+PAID_PREFIXES = ["anthropic/", "openai/", "google/gemini", "cohere/", "mistralai/command"]
+
+def assert_free_models(*model_ids):
+    """
+    Aborta se qualquer modelo selecionado pertencer a um provedor pago.
+    Proteção contra bugs de fallback que possam introduzir custo inesperado.
+    """
+    for mid in model_ids:
+        if mid and any(mid.startswith(p) for p in PAID_PREFIXES):
+            print(f"{LOG_PREFIX} ABORT: modelo pago detectado na seleção: {mid}", file=sys.stderr)
+            print(f"{LOG_PREFIX} Nenhuma alteração feita no config.yaml.", file=sys.stderr)
+            sys.exit(2)
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -390,11 +516,28 @@ def main():
         print(f"{LOG_PREFIX} ERRO: sem modelos free", file=sys.stderr)
         sys.exit(1)
 
-    text_llms = [m for m in nvidia_models if is_text_llm(m["id"])]
+    # Separate text-only and multimodal models
+    text_only_models = filter_text_only_models(nvidia_models)
+    multimodal_models = filter_multimodal_models(nvidia_models)
 
-    print(f"{LOG_PREFIX} {len(nvidia_models)} free, {len(text_llms)} LLMs de texto — nvidia previews:")
+    # Also probe OpenRouter for multimodal MoE candidates not on NIM
+    or_multimodal_models = get_openrouter_multimodal_models()
+    # Combine: NIM multimodal first (preferred, lower latency), then OR
+    all_multimodal_models = multimodal_models + [
+        m for m in or_multimodal_models if m["id"] not in {x["id"] for x in multimodal_models}
+    ]
+    
+    # text_llms for model.default and reference_models (text-only only)
+    text_llms = [m for m in text_only_models if is_text_llm(m["id"])]
+
+    print(f"{LOG_PREFIX} {len(nvidia_models)} free, {len(text_only_models)} text-only, {len(multimodal_models)} multimodal — nvidia previews:")
     for i, m in enumerate(nvidia_models, 1):
-        tag = "LLM" if is_text_llm(m["id"]) else "---"
+        if m["id"] in set(MULTIMODAL_AGG_CANDIDATES):
+            tag = "MULTIMODAL"
+        elif is_text_llm(m["id"]):
+            tag = "LLM"
+        else:
+            tag = "---"
         prio = "" if is_high_priority(m["id"]) else " (baixa prioridade p/ default)"
         print(f"  {i:2d} [{tag}] {m['id']:<48}{prio}")
 
@@ -405,13 +548,17 @@ def main():
     default_pool = high_priority_llms or text_llms  # fallback se tudo for low-priority
     default_model = default_pool[0]["id"] if default_pool else "deepseek-ai/deepseek-v4-flash-0731"
     ref_models    = pick_by_ranking(text_llms, n=2, skip=(default_model,))
-    agg_model     = pick_aggregator(text_llms, skip=(default_model, *ref_models))
+    # Aggregator: prefer multimodal (NIM first, then OR), then text-only
+    agg_model     = pick_aggregator(all_multimodal_models + text_llms, skip=(default_model, *ref_models))
 
     # Nota: modelos Nous ficam apenas em fallback_providers (o MOA reference_models
     # não autentica provider: custom com key_env corretamente)
     print(f"{LOG_PREFIX} model.default:    {default_model}")
     print(f"{LOG_PREFIX} reference_models: {ref_models}")
     print(f"{LOG_PREFIX} aggregator:       {agg_model}")
+
+    # Guarda: aborta se qualquer modelo selecionado for pago
+    assert_free_models(default_model, *ref_models, agg_model)
 
     config_text = read_config()
     original    = config_text
