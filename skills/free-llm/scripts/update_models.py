@@ -92,6 +92,8 @@ SKIP_AGENT = [
     "content-safety", "openrouter/free", "lyria", "rerank",
     "embed", "tts", "flux-tts", "s2.1-pro", "whisper",
     "fish-audio", "deepgram", "clip-preview",
+    "cosmos", "detector", "speaker", "ising", "kumo", "riva",
+    "voicechat", "diffusiongemma", "transfer",
 ]
 SKIP_AGG_EXTRA = ["nano", "small", "mini", "liquid", "lfm", "ling"]
 
@@ -117,13 +119,15 @@ MULTIMODAL_AGG_CANDIDATES_NIM = [
     "deepseek-ai/deepseek-v4.1-flash",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
     "meta/muse-glimmer-30b",
+    "nvidia/nemotron-voicechat",
 ]
 # OpenRouter candidates (probed via openrouter.ai — `:free` suffix required)
-# ordered by preference
+# ordered by preference — apenas modelos que REALMENTE existem no OpenRouter free
 MULTIMODAL_AGG_CANDIDATES_OR = [
-    "deepseek-ai/deepseek-v4.1-flash:free",
-    "z-ai/glm-5-3-flash:free",
-    "moonshotai/kimi-k3:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
 ]
 # unified set for is_multimodal_agg_candidate check (strip :free for normalisation)
 MULTIMODAL_AGG_CANDIDATES = MULTIMODAL_AGG_CANDIDATES_NIM + MULTIMODAL_AGG_CANDIDATES_OR
@@ -133,55 +137,75 @@ def is_multimodal_agg_candidate(model_id: str) -> bool:
     return model_id in MULTIMODAL_AGG_CANDIDATES
 
 # ─── NVIDIA NIM: candidatos a sondar (previews free) ──────────────────────────
-
+# Fonte: https://build.nvidia.com/models?filters=nimType%3Anim_type_preview
 NVIDIA_CANDIDATES = [
     # Text-only high-priority (para model.default + reference_models)
-    "minimaxai/minimax-m3",
-    "deepseek-ai/deepseek-v4-flash-0731",
-    "deepseek-ai/deepseek-v4-pro-0813",
     "nvidia/nemotron-3-super-120b-a12b",
     "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-nano-3-30b-a3b",
-    "moonshotai/kimi-k2.6",
-    "nvidia/nemotron-3.5-lightning",
-    "nvidia/nemotron-3-mini-4b",
-    "nvidia/llama-3.1-nemotron-70b-instruct",
-    "nvidia/nemotron-4-mini-hindi-4b-instruct",
-    "nvidia/mistral-nemo-minitron-8b-8k-instruct",
-    # Multimodal MoE (apenas para aggregator)
-    "moonshotai/kimi-k3",
-    "z-ai/glm-5-3-flash",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
     "deepseek-ai/deepseek-v4.1-flash",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5-3",
+    "z-ai/glm-5-3-flash",
     "meta/muse-glimmer-30b",
+    "google/gemma-4-31b-it",
+    "poolside/laguna-xs-2.1",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "nvidia/nemotron-voicechat",
 ]
+
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_PROBE_CAP = 14   # candidatos fixos vêm primeiro (prioridade); o resto é descoberto
+
+
+def _nvidia_discover(key):
+    """IDs do catálogo /models (sem preço). [] se falhar."""
+    import requests
+    try:
+        r = requests.get(f"{NVIDIA_BASE_URL}/models",
+                         headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        if r.status_code != 200:
+            print(f"{LOG_PREFIX} [nvidia] /models HTTP {r.status_code}", file=sys.stderr)
+            return []
+        return [m["id"] for m in r.json().get("data", []) if m.get("id") and is_text_llm(m["id"])]
+    except (requests.RequestException, ValueError, AttributeError) as e:
+        print(f"{LOG_PREFIX} [nvidia] /models falhou: {e!r}", file=sys.stderr)
+        return []
+
 
 def get_nvidia_models():
     """
-    NVIDIA /v1/models não expõe preço. Sondamos os candidatos e ficamos com
-    os que respondem 200. A lista de candidatos é mantida à mão (previews free).
+    NVIDIA /v1/models não expõe preço nem se é "Free Endpoint". Descobrimos o
+    catálogo, ordenamos com NVIDIA_CANDIDATES na frente (prioridade) e sondamos
+    até NVIDIA_PROBE_CAP. Vivo = 200 ou 429; 402/403 (não-free) e 404 caem fora.
     """
     key = load_key("NVIDIA_API_KEY")
     if not key:
         return []
 
     import requests
+    discovered = _nvidia_discover(key)
+    if discovered:
+        ordered = [m for m in NVIDIA_CANDIDATES if m in discovered]
+        ordered += [m for m in discovered if m not in NVIDIA_CANDIDATES]
+    else:
+        ordered = list(NVIDIA_CANDIDATES)  # /models fora do ar: lista fixa
+
     out = []
-    for mid in NVIDIA_CANDIDATES:
+    for mid in ordered[:NVIDIA_PROBE_CAP]:
         try:
             r = requests.post(
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                },
+                f"{NVIDIA_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={"model": mid, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 8},
                 timeout=20,
             )
-            if r.status_code == 200:
+            if r.status_code in (200, 429):
                 out.append({"id": mid, "name": mid, "ctx": 0})
-        except Exception:
-            pass
+            else:
+                print(f"{LOG_PREFIX} [probe] {mid}: HTTP {r.status_code}", file=sys.stderr)
+        except requests.RequestException as e:
+            print(f"{LOG_PREFIX} [probe] {mid}: {type(e).__name__}", file=sys.stderr)
     return out
 
 # Separate text-only and multimodal models for proper selection
@@ -221,10 +245,16 @@ def get_openrouter_multimodal_models():
                 json={"model": mid, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
                 timeout=20,
             )
-            if r.status_code in (200, 400):  # 400 = model exists but rejects text-only (multimodal)
+            if r.status_code == 200:
                 out.append({"id": mid, "name": mid, "ctx": 0})
-                status_note = "OK" if r.status_code == 200 else "available (multimodal-only)"
-                print(f"{LOG_PREFIX} OR multimodal {status_note}: {mid}")
+                print(f"{LOG_PREFIX} OR multimodal available (multimodal-only): {mid}")
+            elif r.status_code == 400:
+                # 400 = model exists but rejects text-only (multimodal)
+                out.append({"id": mid, "name": mid, "ctx": 0})
+                print(f"{LOG_PREFIX} OR multimodal available (multimodal-only): {mid}")
+            elif r.status_code == 404:
+                print(f"{LOG_PREFIX} OR multimodal not found (skipping): {mid}", file=sys.stderr)
+                continue
             else:
                 print(f"{LOG_PREFIX} OR multimodal {mid}: {r.status_code}", file=sys.stderr)
         except Exception as e:
@@ -576,17 +606,18 @@ def main():
     config_text = patch_moa_aggregator(config_text, agg_model)
 
     if config_text == original:
-        print(f"{LOG_PREFIX} nenhuma mudança no config.yaml")
-    else:
-        write_config(config_text)
-        print(f"{LOG_PREFIX} config.yaml atualizado!")
+        print(f"{LOG_PREFIX} nenhuma mudança no config.yaml — gateway não reiniciado")
+        return
+    write_config(config_text)
+    print(f"{LOG_PREFIX} config.yaml atualizado!")
 
     # Reinicia o gateway (host gateway via systemd, não por perfil)
     print("[acao] reiniciando gateway para assumir novos modelos...")
     import subprocess
-    # Tenta systemctl --user primeiro (mais confiável no cron)
+    # --no-block: enfileira o restart no systemd e retorna na hora (evita TimeoutExpired
+    # quando o gateway demora a drenar sessões ativas). Único restart do fluxo.
     r = subprocess.run(
-        ["systemctl", "--user", "restart", "hermes-gateway.service"],
+        ["systemctl", "--user", "--no-block", "restart", "hermes-gateway.service"],
         capture_output=True, timeout=30,
     )
     if r.returncode != 0:
