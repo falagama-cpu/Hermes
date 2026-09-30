@@ -75,7 +75,8 @@ O script de instalação:
 
 ### `update_models.py`
 - Descobre o catálogo NVIDIA via `/models` (filtrado por `SKIP_AGENT`), põe `NVIDIA_CANDIDATES` na frente como prioridade e sonda até `NVIDIA_PROBE_CAP` (14); vivo = 200 ou 429; falhas imprimem `[probe] <id>: HTTP <código>`. Só reinicia o gateway se o config mudou.
-- Limitação: probe com timeout de 20 s; modelos lentos (kimi-k3, deepseek-v4.1-flash, às vezes nemotron-3.5-lightning) dão ReadTimeout e podem sair do ranking e do `moa.reference_models` de uma execução para outra.
+- Reconciliação de órfãos: só é órfão o modelo que sumiu do `/models` (`NVIDIA_DISCOVERED`). Timeout/429 no probe não remove nada do config; se a descoberta falhar, não reconcilia. Sem isso, um ReadTimeout apagava o modelo de `fallback_providers` e `moa.reference_models`.
+- Limitação: probe com timeout de 20 s; modelos lentos (kimi-k3, deepseek-v4.1-flash, às vezes nemotron-3.5-lightning) dão ReadTimeout e podem ficar fora do ranking de uma execução (mas não são mais removidos do config).
 - Sonda Nous Portal catálogo (`model-catalog.json`) + valida candidatos free conhecidos (`NOUS_FREE_CANDIDATES`) via probe 200
 - **NVIDIA by design**: `model.default`, `moa.reference_models` (preset + root) são **exclusivamente NVIDIA text-only**
 - **Aggregator multimodal**: o `moa.aggregator` prefere multimodal MoE em dois estágios — primeiro sonda `MULTIMODAL_AGG_CANDIDATES_NIM` via NIM (probe 200), depois `MULTIMODAL_AGG_CANDIDATES_OR` via OpenRouter (probe 200 **ou 400** — 400 = modelo existe mas rejeita input text-only, esperado para multimodal-only); fallback = text-only high-priority NVIDIA. **`z-ai/glm-5-3-flash` e `deepseek-ai/deepseek-v4.1-flash` são modelos OpenRouter, não NIM** — probe NIM retorna 404/timeout para eles; adicioná-los apenas a `MULTIMODAL_AGG_CANDIDATES_OR` com sufixo `:free`. Modelos com sufixo `:free` no ID → `patch_moa_aggregator` grava `provider: openrouter` + `base_url: openrouter.ai/api/v1`

@@ -155,6 +155,7 @@ NVIDIA_CANDIDATES = [
 ]
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_DISCOVERED: list = []   # ids do /models na última execução ([] = descoberta falhou)
 NVIDIA_PROBE_CAP = 14   # candidatos fixos vêm primeiro (prioridade); o resto é descoberto
 
 
@@ -185,6 +186,7 @@ def get_nvidia_models():
 
     import requests
     discovered = _nvidia_discover(key)
+    NVIDIA_DISCOVERED[:] = discovered
     if discovered:
         ordered = [m for m in NVIDIA_CANDIDATES if m in discovered]
         ordered += [m for m in discovered if m not in NVIDIA_CANDIDATES]
@@ -598,7 +600,9 @@ def main():
     original    = config_text
 
     # reconciliação primeiro (remove NVIDIA órfão antes de reescrever os slots)
-    orphans = find_orphan_nvidia_models(config_text, [m["id"] for m in nvidia_models])
+    # Órfão = sumiu do catálogo /models. Timeout/429 no probe NÃO torna órfão.
+    # Descoberta vazia -> lista vazia -> find_orphan_nvidia_models não reconcilia.
+    orphans = find_orphan_nvidia_models(config_text, list(NVIDIA_DISCOVERED))
     config_text, _ = strip_orphan_nvidia_entries(config_text, orphans)
 
     config_text = patch_model_default(config_text, default_model)
