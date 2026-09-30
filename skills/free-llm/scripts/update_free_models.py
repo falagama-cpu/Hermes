@@ -20,7 +20,7 @@ As fontes e como cada uma informa "gratuito":
 Regras de escrita (idempotente):
   - fallback_providers = cadeia ordenada (nvidia como provider
     nativo; nous como provider "custom" + key_env NOUS_API_KEY).
-  - Se nada mudou, não reescreve o arquivo.
+  - Se nada mudou, não reescreve o arquivo. Não reinicia o gateway (relê o config em runtime).
 
 Uso:
   python3 update_free_models.py           # roda e aplica
@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes/profiles/default"))
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes/profiles/pesquisa"))
 ENV_PATH = HERMES_HOME / ".env"
 CONFIG_YAML = HERMES_HOME / "config.yaml"
 
@@ -55,28 +55,46 @@ SKIP_AGENT = [
     "tts", "flux-tts", "whisper", "fish-audio", "deepgram",
     "clip-preview", "nano-omni", "ling-3.0-flash-sante",
     "ling-3.0-flash-fin", "thinkingmachines",  # thinkingmachines = agentic-only (403)
+    "cosmos", "detector", "speaker", "ising", "kumo", "riva",
+    "voicechat", "diffusiongemma", "transfer",
 ]
 
-# NVIDIA NIM: candidatos a sondar (previews free). Não há campo de preço no /models.
-NVIDIA_CANDIDATES = [
-    "minimaxai/minimax-m3",
-    "deepseek-ai/deepseek-v4-flash-0731",
-    "deepseek-ai/deepseek-v4-pro-0813",
-    "nvidia/nemotron-3-super-120b-a12b",
+# NVIDIA NIM: /models lista o catálogo (sem preço). Descobrimos por lá e usamos
+# esta lista só como PRIORIDADE; o probe filtra o que não é free (402/403).
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_PREFERRED = [
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5-3",
+    "deepseek-ai/deepseek-v4.1-flash",
     "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-nano-3-30b-a3b",
-    "moonshotai/kimi-k2.6",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "z-ai/glm-5-3-flash",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
 ]
+NVIDIA_PROBE_CAP = 6
 
 # OpenRouter: modelos free via catálogo /models + probe OpenAI-compatible
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Substrings de id em ordem de preferência (ids conferidos no /models).
+OPENROUTER_PREFERRED = ["nemotron-3-super", "laguna-xs-2.1", "laguna-s-2.1",
+                        "gemma-4-31b", "nemotron-3-ultra", "gemma-4-26b"]
+OPENROUTER_PROBE_CAP = 8
+
+
+def _or_rank(c: dict) -> tuple[int, int]:
+    for i, frag in enumerate(OPENROUTER_PREFERRED):
+        if frag in c["model"].lower():
+            return (i, -c["context"])
+    return (len(OPENROUTER_PREFERRED), -c["context"])
+
 
 # nós free: rotear como custom (provider nativo "nous" exige OAuth)
 NOUS_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 # Cloudflare AI: modelos free via Workers AI
 CLOUDFLARE_ACCOUNT_ID = "873e5324eb43fe21573205d16ef9212b"
-CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run"
+CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
 CLOUDFLARE_CANDIDATES = [
     "@cf/meta/llama-3.1-8b-instruct",
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
@@ -122,6 +140,7 @@ def _request(url: str, key: str, *, body: Optional[dict] = None, timeout: int = 
         data = body
         method = "POST"
 
+    last: tuple[int, str] = (0, "network error")
     for attempt in range(MAX_RETRIES + 1):
         try:
             r = requests.request(method, url, headers=headers, json=data, timeout=timeout)
@@ -129,12 +148,12 @@ def _request(url: str, key: str, *, body: Optional[dict] = None, timeout: int = 
                 return r.status_code, r.text[:300]
             if r.status_code == 200:
                 return 200, r.text
-            # transiente -> cai no retry
+            last = (r.status_code, r.text[:300])  # transiente
         except requests.RequestException as e:
-            pass
+            last = (0, f"network error: {type(e).__name__}")
         if attempt < MAX_RETRIES:
             time.sleep(BASE_DELAY * (2 ** attempt))
-    return 0, "network error"
+    return last
 
 
 def probe(base_url: str, key: str, model_id: str) -> bool:
@@ -142,15 +161,17 @@ def probe(base_url: str, key: str, model_id: str) -> bool:
         f"{base_url}/chat/completions", key,
         body={"model": model_id, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 8},
     )
-    return status == 200
+    if status not in (200, 429):
+        print(f"  [probe] {model_id}: HTTP {status}", file=sys.stderr)
+    return status in (200, 429)  # 429 = existe e está no ar, só limitado
 
 
 def is_free(m: dict) -> bool:
-    p = m.get("pricing", {})
-    if not isinstance(p, dict):
-        return False
+    p = m.get("pricing")
+    if not isinstance(p, dict) or p.get("prompt") is None or p.get("completion") is None:
+        return False  # sem preço explícito != gratuito
     try:
-        return float(p.get("prompt") or 0) == 0.0 and float(p.get("completion") or 0) == 0.0
+        return float(p["prompt"]) == 0.0 and float(p["completion"]) == 0.0
     except (TypeError, ValueError):
         return False
 
@@ -161,16 +182,24 @@ def is_agent_text(mid: str) -> bool:
 
 
 def collect_nvidia(key: str) -> list[dict]:
+    status, body = _request(f"{NVIDIA_BASE_URL}/models", key)
+    discovered: list[str] = []
+    if status == 200:
+        try:
+            discovered = [m["id"] for m in json.loads(body).get("data", [])
+                          if m.get("id") and is_agent_text(m["id"])]
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+    if not discovered:
+        print(f"  [nvidia] /models HTTP {status}, usando lista de prioridade", file=sys.stderr)
+        discovered = list(NVIDIA_PREFERRED)
+    ordered = [m for m in NVIDIA_PREFERRED if m in discovered]
+    ordered += [m for m in discovered if m not in NVIDIA_PREFERRED]
     out: list[dict] = []
-    for mid in NVIDIA_CANDIDATES:
-        if not probe("https://integrate.api.nvidia.com/v1", key, mid):
-            continue
-        out.append({
-            "model": mid,
-            "provider": "nvidia",
-            "base_url": "https://integrate.api.nvidia.com/v1",
-            "context": 0,  # NIM não expõe; fica sem ranking por contexto
-        })
+    for mid in ordered[:NVIDIA_PROBE_CAP]:
+        if probe(NVIDIA_BASE_URL, key, mid):
+            out.append({"model": mid, "provider": "nvidia",
+                        "base_url": NVIDIA_BASE_URL, "context": 0})
     return out
 
 
@@ -197,8 +226,8 @@ def collect_openrouter(key: str) -> list[dict]:
             "base_url": OPENROUTER_BASE_URL,
             "context": int(m.get("context_length") or 0),
         })
-    out.sort(key=lambda c: c["context"], reverse=True)
-    return [c for c in out[:PROBE_CAP] if probe(c["base_url"], key, c["model"])]
+    out.sort(key=_or_rank)
+    return [c for c in out[:OPENROUTER_PROBE_CAP] if probe(c["base_url"], key, c["model"])]
 
 
 def collect_nous(key: str) -> list[dict]:
@@ -230,41 +259,19 @@ def collect_nous(key: str) -> list[dict]:
 
 
 def collect_cloudflare(key: str) -> list[dict]:
-    """Sonda modelos Cloudflare AI (Workers AI) e retorna os que responderem 200."""
+    """Sonda Workers AI pelo endpoint OpenAI-compatível (/ai/v1/chat/completions),
+    o mesmo que o cliente usará em produção."""
     out: list[dict] = []
     for mid in CLOUDFLARE_CANDIDATES:
-        model_url = f"{CLOUDFLARE_BASE_URL}/{mid}"
-        if not probe_cloudflare(model_url, key, mid):
+        if not probe(CLOUDFLARE_BASE_URL, key, mid):
             continue
         out.append({
             "model": mid,
             "provider": "custom",
-            "base_url": model_url,
+            "base_url": CLOUDFLARE_BASE_URL,
             "key_env": "CLOUDFLARE_API_TOKEN",
         })
     return out
-
-
-def probe_cloudflare(url: str, key: str, model_id: str) -> bool:
-    """Testa um modelo Cloudflare via POST no endpoint /run/{model}."""
-    import requests
-    try:
-        r = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            json={"messages": [{"role": "user", "content": "ping"}], "max_tokens": 8},
-            timeout=20,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("success"):
-                return True
-        return False
-    except Exception:
-        return False
 
 
 def build_chain(nvidia: list[dict], openrouter: list[dict], nous: list[dict], cloudflare: list[dict]) -> list[dict]:
@@ -289,10 +296,10 @@ def build_chain(nvidia: list[dict], openrouter: list[dict], nous: list[dict], cl
                 entry["key_env"] = c["key_env"]
             chain.append(entry)
             seen.add(key)
-            if len([e for e in chain if e]) >= n:
+            if len(chain) >= n:
                 return
 
-    add(nvidia, 2)
+    add(nvidia, 3)
     add(openrouter, 5)
     add(nous, 7)
     add(cloudflare, TOP_N)
@@ -303,7 +310,7 @@ def apply_fallback_chain(chain: list[dict], check_only: bool) -> bool:
     import yaml  # PyYAML disponível no venv do Hermes
 
     txt = CONFIG_YAML.read_text(encoding="utf-8")
-    data = yaml.safe_load(txt)
+    data = yaml.safe_load(txt) or {}
 
     current = data.get("fallback_providers") or []
     new = chain
@@ -318,7 +325,7 @@ def apply_fallback_chain(chain: list[dict], check_only: bool) -> bool:
     if check_only:
         return False
 
-    backup = CONFIG_YAML.with_suffix(".yaml.pre-update-free-models")
+    backup = CONFIG_YAML.with_suffix(".yaml.pre-update-free-models-" + time.strftime("%Y%m%d-%H%M%S"))
     try:
         backup.write_text(txt, encoding="utf-8")
     except OSError:
@@ -367,10 +374,7 @@ def main() -> int:
     changed = apply_fallback_chain(chain, check_only)
     if changed:
         print("[OK] config.yaml atualizado.")
-        # Reinicia o gateway para que as novas seleções de modelo entrem em efeito
-        print("[acao] reiniciando gateway para assumir novos modelos...")
-        import subprocess
-        subprocess.run(["hermes", "gateway", "restart"], capture_output=True, timeout=30)
+        # Sem restart: o gateway relê fallback_providers do disco em runtime.
     elif check_only:
         print("[check] sem alterações aplicadas; gateway não reiniciado.")
 
