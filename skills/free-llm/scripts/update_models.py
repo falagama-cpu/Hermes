@@ -543,6 +543,14 @@ def assert_free_models(*model_ids):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def gateway_unit_name(hermes_home) -> str:
+    """Serviço systemd do gateway do perfil dono de hermes_home."""
+    home = Path(hermes_home)
+    if home.parent.name == "profiles":
+        return f"hermes-gateway-{home.name}.service"
+    return "hermes-gateway.service"
+
+
 def main():
     print(f"{LOG_PREFIX} iniciando atualização por ranking (2 fontes: nvidia/nous)...")
     print(f"{LOG_PREFIX} HERMES_HOME: {HERMES_HOME}")
@@ -615,20 +623,21 @@ def main():
     write_config(config_text)
     print(f"{LOG_PREFIX} config.yaml atualizado!")
 
-    # Reinicia o gateway (host gateway via systemd, não por perfil)
-    print("[acao] reiniciando gateway para assumir novos modelos...")
-    import subprocess
+    # Reinicia o gateway DESTE perfil: profiles/<nome> -> hermes-gateway-<nome>.service;
+    # o perfil default (HERMES_HOME=~/.hermes) usa hermes-gateway.service.
+    import subprocess, shutil
+    unit = gateway_unit_name(HERMES_HOME)
+    print(f"[acao] reiniciando {unit} para assumir novos modelos...")
     # --no-block: enfileira o restart no systemd e retorna na hora (evita TimeoutExpired
     # quando o gateway demora a drenar sessões ativas). Único restart do fluxo.
-    r = subprocess.run(
-        ["systemctl", "--user", "--no-block", "restart", "hermes-gateway.service"],
-        capture_output=True, timeout=30,
-    )
-    if r.returncode != 0:
-        # Fallback: hermes gateway restart com HERMES_HOME do host
-        import os
-        env = {**os.environ, "HERMES_HOME": str(Path.home() / ".hermes")}
-        subprocess.run(["hermes", "gateway", "restart"], capture_output=True, timeout=30, env=env)
+    try:
+        r = subprocess.run(["systemctl", "--user", "--no-block", "restart", unit],
+                           capture_output=True, text=True, timeout=30)
+        print(f"[restart] {unit} rc={r.returncode} {(r.stderr or '').strip()[:200]}")
+        if r.returncode != 0:
+            print(f"[restart] FALHOU ao enfileirar {unit}", file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"[restart] FALHOU: {e!r}", file=sys.stderr)
 
     print(f"{LOG_PREFIX} concluído.")
 
