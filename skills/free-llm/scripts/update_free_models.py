@@ -20,7 +20,7 @@ As fontes e como cada uma informa "gratuito":
 Regras de escrita (idempotente):
   - fallback_providers = cadeia ordenada (nvidia como provider
     nativo; nous como provider "custom" + key_env NOUS_API_KEY).
-  - Se nada mudou, não reescreve o arquivo. Não reinicia o gateway (relê o config em runtime).
+  - Se nada mudou, não reescreve o arquivo. Reinicia o gateway do perfil ao final de toda execução (exceto --check).
 
 Uso:
   python3 update_free_models.py           # roda e aplica
@@ -341,6 +341,24 @@ def apply_fallback_chain(chain: list[dict], check_only: bool) -> bool:
     return True
 
 
+def restart_gateway() -> None:
+    """Reinicia o gateway DESTE perfil (profiles/<nome> -> hermes-gateway-<nome>.service;
+    perfil default -> hermes-gateway.service). --no-block evita TimeoutExpired quando o
+    gateway demora a drenar sessões."""
+    import subprocess
+    unit = (f"hermes-gateway-{HERMES_HOME.name}.service"
+            if HERMES_HOME.parent.name == "profiles" else "hermes-gateway.service")
+    print(f"[acao] reiniciando {unit}...")
+    try:
+        r = subprocess.run(["systemctl", "--user", "--no-block", "restart", unit],
+                           capture_output=True, text=True, timeout=30)
+        print(f"[restart] {unit} rc={r.returncode} {(r.stderr or '').strip()[:200]}")
+        if r.returncode != 0:
+            print(f"[restart] FALHOU ao enfileirar {unit}", file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"[restart] FALHOU: {e!r}", file=sys.stderr)
+
+
 def main() -> int:
     check_only = "--check" in sys.argv
 
@@ -374,9 +392,11 @@ def main() -> int:
     changed = apply_fallback_chain(chain, check_only)
     if changed:
         print("[OK] config.yaml atualizado.")
-        # Sem restart: o gateway relê fallback_providers do disco em runtime.
     elif check_only:
         print("[check] sem alterações aplicadas; gateway não reiniciado.")
+
+    if not check_only:
+        restart_gateway()
 
     return 0
 

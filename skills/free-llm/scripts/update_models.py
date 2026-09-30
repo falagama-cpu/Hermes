@@ -618,10 +618,10 @@ def main():
     config_text = patch_moa_aggregator(config_text, agg_model)
 
     if config_text == original:
-        print(f"{LOG_PREFIX} nenhuma mudança no config.yaml — gateway não reiniciado")
-        return
-    write_config(config_text)
-    print(f"{LOG_PREFIX} config.yaml atualizado!")
+        print(f"{LOG_PREFIX} nenhuma mudança no config.yaml (reinício do gateway ocorre mesmo assim)")
+    else:
+        write_config(config_text)
+        print(f"{LOG_PREFIX} config.yaml atualizado!")
 
     # Reinicia o gateway DESTE perfil: profiles/<nome> -> hermes-gateway-<nome>.service;
     # o perfil default (HERMES_HOME=~/.hermes) usa hermes-gateway.service.
