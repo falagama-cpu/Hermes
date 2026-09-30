@@ -13,12 +13,8 @@ UPDATE_EXIT_CODE=$?
 
 # If update succeeded, attempt to restart gateway
 if [ $UPDATE_EXIT_CODE -eq 0 ]; then
-    echo "[$(date)] Update successful, attempting gateway restart..." >&2
-    # O gateway roda como host gateway (hermes-gateway.service), não por perfil.
-    # systemctl --user restart é o único jeito confiável de dentro do cron.
-    systemctl --user restart hermes-gateway.service 2>&1 || \
-        HERMES_HOME="$HOME/.hermes" hermes gateway restart 2>&1 || \
-        echo "[$(date)] gateway restart falhou (inofensivo se já está rodando)" >&2
+    # Restart já é feito (--no-block) dentro de update_models.py; não duplicar aqui.
+    echo "[$(date)] Update successful (o update_models.py reinicia o gateway só se o config mudou; veja o log acima)" >&2
 else
     echo "[$(date)] Update failed (exit code $UPDATE_EXIT_CODE), skipping gateway restart" >&2
 fi
