@@ -74,7 +74,7 @@ O script de instalação:
 - **Rodar manualmente**: `HERMES_HOME=$HOME/.hermes/profiles/<profile> python3 <skill-dir>/scripts/update_free_models.py`. O default do script é `~/.hermes/profiles/<perfil>` — sem `HERMES_HOME` ele edita o `config.yaml` do perfil errado.
 
 ### `update_models.py`
-- Descobre o catálogo NVIDIA via `/models` (filtrado por `SKIP_AGENT`), põe `NVIDIA_CANDIDATES` na frente como prioridade e sonda até `NVIDIA_PROBE_CAP` (14); vivo = 200 ou 429; falhas imprimem `[probe] <id>: HTTP <código>`. Só reinicia o gateway se o config mudou.
+- Descobre o catálogo NVIDIA via `/models` (filtrado por `SKIP_AGENT`), põe `NVIDIA_CANDIDATES` na frente como prioridade e sonda até `NVIDIA_PROBE_CAP` (14); vivo = 200 ou 429; falhas imprimem `[probe] <id>: HTTP <código>`. Só reinicia o gateway se o config mudou, e reinicia o serviço DO PERFIL (`hermes-gateway-<perfil>.service`; perfil default = `hermes-gateway.service`), derivado de `HERMES_HOME`. Antes reiniciava sempre `hermes-gateway.service` (gateway do perfil default), deixando o do perfil <perfil> intacto.
 - Reconciliação de órfãos: só é órfão o modelo que sumiu do `/models` (`NVIDIA_DISCOVERED`). Timeout/429 no probe não remove nada do config; se a descoberta falhar, não reconcilia. Sem isso, um ReadTimeout apagava o modelo de `fallback_providers` e `moa.reference_models`.
 - Limitação: probe com timeout de 20 s; modelos lentos (kimi-k3, deepseek-v4.1-flash, às vezes nemotron-3.5-lightning) dão ReadTimeout e podem ficar fora do ranking de uma execução (mas não são mais removidos do config).
 - Sonda Nous Portal catálogo (`model-catalog.json`) + valida candidatos free conhecidos (`NOUS_FREE_CANDIDATES`) via probe 200
