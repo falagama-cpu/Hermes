@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 update_free_models.py — mantém a lista de modelos FREE de 4 provedores
-(OpenRouter, NVIDIA, Nous, Cloudflare) atualizada no config.yaml do perfil <perfil>.
+(OpenRouter, NVIDIA, Nous, Cloudflare) atualizada no config.yaml do perfil (HERMES_HOME).
 
 PROBLEMA que resolve: os provedores trocam os modelos gratuitos com frequência.
 Este script cobre OpenRouter, NVIDIA NIM, Nous Portal e Cloudflare Workers AI.
@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes/profiles/<perfil>"))
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path(__file__).resolve().parent.parent)
 ENV_PATH = HERMES_HOME / ".env"
 CONFIG_YAML = HERMES_HOME / "config.yaml"
 
@@ -93,8 +93,7 @@ def _or_rank(c: dict) -> tuple[int, int]:
 NOUS_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 # Cloudflare AI: modelos free via Workers AI
-CLOUDFLARE_ACCOUNT_ID = "<CLOUDFLARE_ACCOUNT_ID>"
-CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+CLOUDFLARE_BASE_URL_TMPL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"
 CLOUDFLARE_CANDIDATES = [
     "@cf/meta/llama-3.1-8b-instruct",
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
@@ -262,6 +261,11 @@ def collect_cloudflare(key: str) -> list[dict]:
     """Sonda Workers AI pelo endpoint OpenAI-compatível (/ai/v1/chat/completions),
     o mesmo que o cliente usará em produção."""
     out: list[dict] = []
+    account = load_key("CLOUDFLARE_ACCOUNT_ID")
+    if not account:
+        print("[cloudflare] CLOUDFLARE_ACCOUNT_ID ausente no .env — pulando")
+        return []
+    CLOUDFLARE_BASE_URL = CLOUDFLARE_BASE_URL_TMPL.format(account=account)
     for mid in CLOUDFLARE_CANDIDATES:
         if not probe(CLOUDFLARE_BASE_URL, key, mid):
             continue

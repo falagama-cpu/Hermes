@@ -59,7 +59,8 @@ def main() -> int:
     try:
         proc = subprocess.run(
             [sys.executable, str(SELECTOR), *args],
-            capture_output=True, text=True, timeout=TIMEOUT, env=os.environ.copy(),
+            capture_output=True, text=True, timeout=TIMEOUT,
+            env={**os.environ, "HERMES_HOME": str(HOME)},  # seletor grava no MESMO perfil
         )
         rc, out = proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except subprocess.TimeoutExpired as e:

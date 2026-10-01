@@ -38,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes/profiles/<perfil>"))
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path(__file__).resolve().parent.parent)
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 CACHE_PATH  = HERMES_HOME / "provider_models_cache.json"
 

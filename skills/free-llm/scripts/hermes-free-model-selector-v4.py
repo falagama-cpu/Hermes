@@ -45,16 +45,13 @@ Credenciais:
   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
   NVIDIA_API_KEY
 
-Normalmente coloque em:
-  ~/.hermes/.env
+Coloque em $HERMES_HOME/.env (perfil: ~/.hermes/profiles/<perfil>/.env).
 
 Exemplos:
-  python3 ~/hermes-free-model-selector.py --dry-run
-  python3 ~/hermes-free-model-selector.py --verbose
-  python3 ~/hermes-free-model-selector.py --force
+  HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v4.py --dry-run
+  HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v4.py --force
 
-Cron recomendado:
-  0 */6 * * * /usr/bin/python3 ~/hermes-free-model-selector.py >> ~/.hermes/model-selector/cron.log 2>&1
+Agendamento: use install_free_model_selection.sh (cria o job no cron do Hermes).
 
 Dependência:
   pip3 install pyyaml
@@ -102,9 +99,15 @@ except ImportError:
 # PATHS / CONFIG
 # =============================================================================
 
-HERMES_HOME = Path(
-    os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
-)
+def _default_home() -> Path:
+    # Instalado em <perfil>/scripts/ → o perfil dono é o diretório pai.
+    owner = Path(__file__).resolve().parent.parent
+    if (owner / "config.yaml").exists():
+        return owner
+    return Path.home() / ".hermes"
+
+
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or _default_home())
 
 CONFIG_FILE = HERMES_HOME / "config.yaml"
 ENV_FILE = HERMES_HOME / ".env"
@@ -1788,13 +1791,12 @@ def should_switch(
 # CONFIG WRITING
 # =============================================================================
 
-# Endpoints reais usados no config.yaml do Hermes (perfil <perfil>).
+# Endpoints reais usados no config.yaml do Hermes.
 # nous e cloudflare roteiam como provider "custom" + key_env (o provider nativo
 # "nous" exige OAuth device-code; "custom" + Bearer key_env contorna).
-_CLOUDFLARE_ACCOUNT = os.environ.get(
-    "CLOUDFLARE_ACCOUNT_ID",
-    "<CLOUDFLARE_ACCOUNT_ID>",
-)
+# O account id vem do .env (carregado em run(), DEPOIS do import) — por isso a
+# base_url da Cloudflare é resolvida na hora de usar, nunca como constante.
+CLOUDFLARE_BASE_URL_TMPL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"
 
 PROVIDER_ENDPOINTS = {
     "openrouter": {
@@ -1814,10 +1816,7 @@ PROVIDER_ENDPOINTS = {
     },
     "cloudflare": {
         "provider": "custom",
-        "base_url": (
-            f"https://api.cloudflare.com/client/v4/accounts/"
-            f"{_CLOUDFLARE_ACCOUNT}/ai/v1"
-        ),
+        "base_url": CLOUDFLARE_BASE_URL_TMPL,
         "key_env": "CLOUDFLARE_API_TOKEN",
     },
 }
@@ -1849,7 +1848,9 @@ def config_entry(model: Dict[str, Any]) -> Dict[str, Any]:
     entry: Dict[str, Any] = {
         "provider": endpoint["provider"],
         "model": model["_model_id"],
-        "base_url": endpoint["base_url"],
+        "base_url": endpoint["base_url"].format(
+            account=os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+        ),
     }
 
     if endpoint["key_env"]:
@@ -1864,7 +1865,7 @@ def apply_config(
     moa: Optional[Dict[str, Any]],
     fallbacks: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Grava a seleção nos caminhos REAIS do config.yaml do Hermes (perfil <perfil>):
+    """Grava a seleção nos caminhos REAIS do config.yaml do Hermes:
 
       - model.default / model.provider / model.base_url
       - moa.aggregator + moa.presets.default.aggregator  (MOA/REVIEW)
@@ -2645,10 +2646,9 @@ def run(args: argparse.Namespace) -> int:
 def gateway_unit_name() -> str:
     """Serviço systemd do gateway que SERVE este perfil.
 
-    Nesta instalação o perfil <perfil> é servido pelo host gateway multiplex
-    (hermes-gateway.service, default profile, multiplex_profiles=true), NÃO por um
-    gateway-<perfil> standalone (esse foi desabilitado por ser redundante e entrar
-    em loop de falha status=78). Override por env HERMES_GATEWAY_UNIT se mudar.
+    Ordem: env HERMES_GATEWAY_UNIT > hermes-gateway-<perfil>.service se ATIVO >
+    hermes-gateway.service (host multiplex, serve todos os perfis). Nunca reinicia
+    um unit standalone inativo/desabilitado (Restart=always + exit 75 = loop).
     """
     env_unit = os.environ.get("HERMES_GATEWAY_UNIT")
     if env_unit:

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Wrapper for update_models.py that attempts to restart gateway after successful update
 
-SCRIPT_DIR="~/.hermes/profiles/<perfil>/scripts"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
 # Garante que pacotes locais (ex: requests/) em scripts/ estejam disponíveis

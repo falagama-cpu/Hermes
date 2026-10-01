@@ -1,6 +1,6 @@
 # Scripts legados (não agendados)
 
-`update_models.py`, `update_free_models.py`, `choose_best_free_llm.py` e `update_models_wrapper.sh` ficam em `scripts/` só para referência/rollback. Desde 2026-10-01 o único dono do `model.default` é o seletor v4; o job `update-hermes-models` (09/21h, `update_models.py`) está **pausado** no perfil <perfil> porque sobrescrevia o MAIN do v4 com NVIDIA.
+`update_models.py`, `update_free_models.py`, `choose_best_free_llm.py` e `update_models_wrapper.sh` ficam em `scripts/` só para referência/rollback. Desde 2026-10-01 o único dono do `model.default` é o seletor v4; o job `update-hermes-models` (09/21h, `update_models.py`) está **pausado** no perfil original porque sobrescrevia o MAIN do v4 com NVIDIA.
 
 Reativar só se abandonar o v4: `hermes cron resume <id>` — e então pause o `choose-best-free-llm`, nunca os dois ativos.
 

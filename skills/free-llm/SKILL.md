@@ -1,7 +1,7 @@
 ---
 name: free-llm
 description: "Use when tuning or debugging the FREE LLM auto-selection cron. Seletor v4 ranqueia modelos gratuitos pela Artificial Analysis."
-version: 2.0.0
+version: 2.1.0
 author: falagama-cpu
 license: MIT
 platforms: [linux]
@@ -9,6 +9,34 @@ metadata:
   hermes:
     tags: [llm, free-models, cron, artificial-analysis, openrouter, nvidia, cloudflare, nous]
     related_skills: [hermes-agent]
+prerequisites:
+  commands: [hermes, python3]
+required_environment_variables:
+  - name: ARTIFICIAL_ANALYSIS_API_KEY
+    prompt: Artificial Analysis API key (ranking por benchmark)
+    help: "Grátis (1000 req/dia): https://artificialanalysis.ai → API Access"
+    required_for: ranking por benchmark; sem ela usa heurística
+    optional: true
+  - name: OPENROUTER_API_KEY
+    prompt: OpenRouter API key
+    help: https://openrouter.ai/settings/keys
+    optional: true
+  - name: NVIDIA_API_KEY
+    prompt: NVIDIA NIM API key (nvapi-...)
+    help: https://build.nvidia.com → Get API Key
+    optional: true
+  - name: NOUS_API_KEY
+    prompt: Nous Portal API key
+    help: https://portal.nousresearch.com → API Keys
+    optional: true
+  - name: CLOUDFLARE_API_TOKEN
+    prompt: Cloudflare API token (Workers AI)
+    help: https://dash.cloudflare.com/profile/api-tokens (template Workers AI)
+    optional: true
+  - name: CLOUDFLARE_ACCOUNT_ID
+    prompt: Cloudflare Account ID
+    help: https://dash.cloudflare.com → Workers AI → Account ID
+    optional: true
 ---
 
 # Free LLM Selection (seletor v4 + Artificial Analysis)
@@ -22,17 +50,32 @@ metadata:
 
 Um único job de cron escolhe o modelo principal, o agregador MoA e 3 fallbacks **somente entre modelos gratuitos** e grava no `config.yaml` do perfil. O ranking usa os benchmarks medidos da Artificial Analysis (AA); a AA nunca adiciona modelos, só ordena os que já passaram no filtro free.
 
-## Estado atual (perfil <perfil>)
+## Instalação em ambiente novo
 
-| Job | ID | Horário | Script | Estado |
-|---|---|---|---|---|
-| `choose-best-free-llm` | <job_id> | 02/14h | `run_model_selector_v4.py` | ativo, deliver `telegram:<chat_id>` |
-| `update-free-models-14h` | <job_id> | 08/20h | `run_model_selector_v4.py` | ativo, deliver `telegram:<chat_id>` |
-| `update-hermes-models` | <job_id> | 09/21h | `update_models_wrapper.sh` | **pausado** (legado, ver `references/legacy-scripts.md`) |
+Ordem obrigatória — o instalador não copia nem agenda nada antes de 1 e 2 passarem:
 
-Os dois jobs ativos rodam o mesmo seletor → na prática 4 execuções/dia (02/08/14/20h). **Nunca deixe outro script gravando `model.default`**: com dois escritores o modelo no dashboard depende de quem rodou por último e parece "não trocar".
+1. **Dependências**: `hermes` no PATH + perfil existente, `python3` ≥ 3.9, PyYAML (só p/ execução manual; o cron usa o Python do Hermes), `systemctl --user` (opcional: sem ele o gateway não reinicia sozinho), HTTPS de saída para os 5 domínios. Faltando algo obrigatório → aborta com o comando de instalação.
+2. **Chaves**: pede as ausentes com entrada oculta e grava em `<perfil>/.env` (chmod 600). Exige ≥ 1 provedor (OpenRouter/NVIDIA/Nous/Cloudflare); sem nenhum → aborta.
+3. **Instalação**: copia os 3 scripts para `<perfil>/scripts/` e cria **um** job `choose-best-free-llm` (02/08/14/20h, `--no-agent`).
 
-Perfil <perfil> é servido pelo host `hermes-gateway.service` (multiplex). `hermes-gateway-<perfil>.service` fica **disabled** — reiniciá-lo causa loop (exit 75, `Restart=always`).
+```bash
+git clone https://github.com/falagama-cpu/Hermes.git ~/Hermes
+cd ~/Hermes/skills/free-llm/scripts
+bash install_free_model_selection.sh <perfil> --check          # só verifica
+bash install_free_model_selection.sh <perfil> telegram:<chat_id> # instala (perfil "default" = ~/.hermes)
+```
+
+Ao instalar via agente: rode `--check` primeiro e, se faltar dependência ou chave, **avise o usuário e peça antes de prosseguir** — nunca escreva chaves no chat; o usuário as digita no prompt oculto do instalador (ou via captura segura de segredos do Hermes declarada no frontmatter).
+
+## Topologia recomendada
+
+| Job | Horário | Script |
+|---|---|---|
+| `choose-best-free-llm` | 02/08/14/20h | `run_model_selector_v4.py` |
+
+**Nunca deixe outro script gravando `model.default`** (ex.: legados `update-hermes-models`/`update-free-models-14h`): com dois escritores o modelo depende de quem rodou por último e parece "não trocar". O instalador avisa se encontrar job legado.
+
+Gateway: em setup multiplex (um `hermes-gateway.service` servindo vários perfis) o seletor reinicia o host; só usa `hermes-gateway-<perfil>.service` se estiver **ativo**. Override: env `HERMES_GATEWAY_UNIT`. Reiniciar unit standalone desabilitado causa loop (exit 75, `Restart=always`).
 
 ## Arquivos
 
@@ -40,7 +83,7 @@ Scripts (o cron roda a cópia em `~/.hermes/profiles/<perfil>/scripts/`; a da sk
 - `hermes-free-model-selector-v4.py` — catálogo → filtro free → score → probe → gravação → warm-up → restart
 - `aa_scores.py` — busca/cache da AA, matching nome↔id, score por papel
 - `run_model_selector_v4.py` — wrapper de cron: roda o seletor em subprocesso e imprime **só o relatório curto**
-- `install_free_model_selection.sh <perfil> [deliver]` — instala scripts + 1 job
+- `install_free_model_selection.sh <perfil> [deliver] [--check] [--yes]` — dependências → chaves → scripts + 1 job
 
 Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`), `state.json` (última seleção + warm-up), `history.jsonl`, `selector.log`, `last_run.log` (log completo da última execução), `aa_cache.json`, `reliability.json`, `not_free.json`. Backups do config em `<perfil>/backups/config/config.yaml.bak.<ts>`.
 
@@ -84,13 +127,13 @@ tail -3 $P/model-selector/history.jsonl; less $P/model-selector/last_run.log
 # Instalar em outro perfil
 bash <skill>/scripts/install_free_model_selection.sh <perfil> telegram:<chat_id>
 ```
-Sem `HERMES_HOME` o seletor usa `~/.hermes/profiles/<perfil>` — sempre exporte para outro perfil. Não rode `hermes cron run` de dentro do chat do Telegram: o restart do gateway derruba a conversa.
+Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde está instalado (fallback `~/.hermes`). Não rode `hermes cron run` de dentro do chat do Telegram: o restart do gateway derruba a conversa.
 
 ## Workflow de alteração
 
 1. Backup com timestamp do script do **perfil**; edite; `python3 -m py_compile`.
 2. Rode a simulação e leia o relatório + `last_run.log` (`probe ... HTTP <código>`).
-3. Copie os scripts alterados para `<skill>/scripts/` e faça commit/push em `~/Hermes` (falagama-cpu/Hermes).
+3. Copie os scripts alterados para `<skill>/scripts/` e faça commit/push no repositório da skill. Antes do push: `grep -rnE '/home/|[0-9a-f]{32}|telegram:[0-9]' skills/` deve vir vazio (repo público).
 4. Confira a próxima execução agendada no Telegram ou em `cron/output/<job-id>/`.
 
 ## Armadilhas
