@@ -1,6 +1,6 @@
 ---
 name: free-llm
-description: "Use when tuning or debugging the FREE LLM auto-selection cron. Seletor v4 ranqueia modelos gratuitos pela Artificial Analysis."
+description: "Use when tuning, installing or publishing the free-LLM selector."
 version: 2.1.0
 author: falagama-cpu
 license: MIT
@@ -133,8 +133,10 @@ Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde est�
 
 1. Backup com timestamp do script do **perfil**; edite; `python3 -m py_compile`.
 2. Rode a simulação e leia o relatório + `last_run.log` (`probe ... HTTP <código>`).
-3. Copie os scripts alterados para `<skill>/scripts/` e faça commit/push no repositório da skill. Antes do push: `grep -rnE '/home/|[0-9a-f]{32}|telegram:[0-9]' skills/` deve vir vazio (repo público).
-4. Confira a próxima execução agendada no Telegram ou em `cron/output/<job-id>/`.
+3. Copie os scripts alterados para `<skill>/scripts/` e faça commit/push no repositório da skill (público). Antes do push, rode o gate de sanitização — ver `references/public-publishing.md`.
+4. Mudou o instalador? Teste-o em HOME temporário conforme `references/public-publishing.md` antes de publicar.
+5. Sincronize as 3 cópias (repo, skill local, `<perfil>/scripts/` com `.bak-<ts>`) e confira com `diff -rq --exclude __pycache__`.
+6. Confira a próxima execução agendada no Telegram ou em `cron/output/<job-id>/`.
 
 ## Armadilhas
 
@@ -147,6 +149,8 @@ Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde est�
 - **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo. Restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).
 - **Todos os crons falham juntos com `cron external worker exited before ownership acknowledgement`**: regressão de update do Hermes (traceback de import no worker), não dos scripts — `hermes update` de novo.
 - **Gateway standalone `failed` em setup multiplex é ruído**: confirme em `cron/executions.db` antes de culpar o gateway.
+- **Valores do `.env` nunca viram constante de módulo**: `load_dotenv()` roda dentro de `run()`, depois do import — `os.environ.get("X", <default fixo>)` no topo do arquivo lê o default, não o `.env`. Guarde template (`.../accounts/{account}/ai/v1`) e formate no uso (`config_entry`).
+- **Default de `HERMES_HOME` = perfil dono do script** (`Path(__file__).resolve().parent.parent`), nunca um nome de perfil fixo; o wrapper repassa `HERMES_HOME` explícito ao subprocesso para seletor e relatório lerem o mesmo perfil.
 
 ## Vision (auxiliar)
 
@@ -155,4 +159,5 @@ Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde est�
 ## Referências
 
 - `references/legacy-scripts.md` — `update_models.py`/`update_free_models.py` (pausados), regex YAML, MoA multimodal
+- `references/public-publishing.md` — gate de sanitização do repo público e receita de teste do instalador em HOME limpo
 - https://artificialanalysis.ai/data-api/docs · https://openrouter.ai/docs · https://docs.nvidia.com/nim/ · https://developers.cloudflare.com/workers-ai/
