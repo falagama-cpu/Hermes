@@ -1,186 +1,73 @@
 #!/bin/bash
-# install_free_model_selection.sh — instala o sistema de seleção de modelos FREE
-# em qualquer perfil do Hermes Agent.
+# install_free_model_selection.sh — instala o seletor de LLMs FREE (v4 + ranking
+# Artificial Analysis) em um perfil do Hermes Agent.
 #
 # Uso:
-#   bash install_free_model_selection.sh <profile>
-#   bash install_free_model_selection.sh <perfil>
+#   bash install_free_model_selection.sh <profile> [deliver]
+#   bash install_free_model_selection.sh <perfil> telegram:<chat_id>
 #
 # O que faz:
-#   1. Copia os scripts update_models.py e update_free_models.py
-#   2. Cria os 3 cron jobs no perfil (update-free-models-14h, choose-best-free-llm, update-hermes-models)
-#   3. Verifica se as API keys existem no .env do perfil
-#   4. Opcionalmente roda a primeira seleção
+#   1. Copia o seletor v4, o wrapper de relatório e aa_scores.py para <perfil>/scripts/
+#   2. Cria UM job de cron (choose-best-free-llm, 02/08/14/20h) via `hermes cron create`,
+#      no_agent, entregando o relatório curto em [deliver] (default: local)
+#   3. Verifica as chaves no .env do perfil
+#
+# Um único dono do model.default: NÃO cria o job legado update-hermes-models
+# (update_models.py) — ele sobrescrevia a escolha do v4.
 
 set -euo pipefail
 
-# ─── Argumentos ───────────────────────────────────────────────────────────────
 PROFILE="${1:-}"
+DELIVER="${2:-local}"
 if [[ -z "$PROFILE" ]]; then
-    echo "ERRO: informe o perfil"
-    echo "Uso: bash install_free_model_selection.sh <profile>"
+    echo "Uso: bash install_free_model_selection.sh <profile> [deliver]"
     exit 1
 fi
 
 HERMES_HOME="$HOME/.hermes/profiles/$PROFILE"
 if [[ ! -d "$HERMES_HOME" ]]; then
     echo "ERRO: perfil '$PROFILE' não encontrado em $HERMES_HOME"
-    echo "Perfis disponíveis:"
     ls -1 "$HOME/.hermes/profiles/" 2>/dev/null | head -10
     exit 1
 fi
 
-# ─── Diretórios ───────────────────────────────────────────────────────────────
-SRC_SCRIPTS="$(cd "$(dirname "$0")/.." && pwd)/<perfil>/scripts"
-DST_SCRIPTS="$HERMES_HOME/scripts"
-DST_CRON="$HERMES_HOME/cron"
+SRC="$(cd "$(dirname "$0")" && pwd)"
+DST="$HERMES_HOME/scripts"
+mkdir -p "$DST"
 
-echo "=== Instalando free-model-selection no perfil: $PROFILE ==="
-echo "  origem:  $SRC_SCRIPTS"
-echo "  destino: $DST_SCRIPTS"
+echo "=== Copiando scripts para $DST ==="
+for f in hermes-free-model-selector-v4.py run_model_selector_v4.py aa_scores.py; do
+    cp -v "$SRC/$f" "$DST/"
+done
+python3 -m py_compile "$DST/hermes-free-model-selector-v4.py" "$DST/run_model_selector_v4.py" "$DST/aa_scores.py"
+python3 -c "import yaml" 2>/dev/null || echo "  ✗ PyYAML ausente no python3 do sistema (o wrapper precisa)"
 
-# ─── Copiar scripts ───────────────────────────────────────────────────────────
-mkdir -p "$DST_SCRIPTS"
-cp -v "$SRC_SCRIPTS/update_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    cp -v "$(dirname "$0")/update_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    echo "  WARN: update_models.py não encontrado no source"
-cp -v "$SRC_SCRIPTS/update_free_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    cp -v "$(dirname "$0")/update_free_models.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    echo "  WARN: update_free_models.py não encontrado no source"
-cp -v "$SRC_SCRIPTS/choose_best_free_llm.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    cp -v "$(dirname "$0")/choose_best_free_llm.py" "$DST_SCRIPTS/" 2>/dev/null || \
-    echo "  WARN: choose_best_free_llm.py não encontrado no source"
-
-# ─── Verificar API keys ───────────────────────────────────────────────────────
 echo ""
-echo "=== Verificando API keys no .env do perfil ==="
-ENV_PATH="$HERMES_HOME/.env"
-if [[ -f "$ENV_PATH" ]]; then
-    for key in NVIDIA_API_KEY OPENROUTER_API_KEY NOUS_API_KEY CLOUDFLARE_API_TOKEN; do
-        if grep -q "^${key}=" "$ENV_PATH" 2>/dev/null; then
-            echo "  ✓ $key encontrado"
-        else
-            echo "  ✗ $key NÃO encontrado — adicione ao $ENV_PATH"
-        fi
-    done
+echo "=== Chaves no $HERMES_HOME/.env ==="
+for key in ARTIFICIAL_ANALYSIS_API_KEY OPENROUTER_API_KEY NVIDIA_API_KEY NOUS_API_KEY \
+           CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+    if grep -qE "^${key}=.+" "$HERMES_HOME/.env" 2>/dev/null; then
+        echo "  ✓ $key"
+    else
+        echo "  ✗ $key ausente"
+    fi
+done
+echo "  (sem ARTIFICIAL_ANALYSIS_API_KEY o ranking cai na heurística por palavras-chave)"
+
+echo ""
+echo "=== Cron ==="
+if hermes -p "$PROFILE" cron list 2>/dev/null | grep -q "choose-best-free-llm"; then
+    echo "  ! choose-best-free-llm já existe — não recriado (ajuste com hermes cron edit)"
 else
-    echo "  ✗ $ENV_PATH não encontrado — crie com as API keys"
+    hermes -p "$PROFILE" cron create "0 2,8,14,20 * * *" \
+        --name choose-best-free-llm --script run_model_selector_v4.py --no-agent \
+        --deliver "$DELIVER"
+fi
+if hermes -p "$PROFILE" cron list 2>/dev/null | grep -q "update-hermes-models"; then
+    echo "  ! job legado update-hermes-models encontrado: pause-o (conflita com o v4):"
+    echo "    hermes -p $PROFILE cron pause <job_id>"
 fi
 
-# ─── Criar cron jobs ──────────────────────────────────────────────────────────
 echo ""
-echo "=== Criando cron jobs ==="
-mkdir -p "$DST_CRON/output"
-
-# Jobs que serão criados (JSON array)
-JOBS=$(cat <<'JSON'
-[
-  {
-    "name": "update-free-models-14h",
-    "prompt": "",
-    "script": "update_free_models.py",
-    "no_agent": true,
-    "schedule": {"kind": "cron", "expr": "0 8,20 * * *"},
-    "repeat": {"times": null},
-    "enabled": true,
-    "state": "scheduled",
-    "deliver": "local",
-    "failure_deliver": "",
-    "failure_streak": 0
-  },
-  {
-    "name": "choose-best-free-llm",
-    "prompt": "",
-    "script": "choose_best_free_llm.py",
-    "no_agent": true,
-    "schedule": {"kind": "cron", "expr": "0 2,14 * * *"},
-    "repeat": {"times": null},
-    "enabled": true,
-    "state": "scheduled",
-    "deliver": "local",
-    "failure_deliver": "",
-    "failure_streak": 0
-  },
-  {
-    "name": "update-hermes-models",
-    "prompt": "",
-    "script": "update_models.py",
-    "no_agent": true,
-    "schedule": {"kind": "cron", "expr": "0 9,21 * * *"},
-    "repeat": {"times": null},
-    "enabled": true,
-    "state": "scheduled",
-    "deliver": "local",
-    "failure_deliver": "",
-    "failure_streak": 0
-  }
-]
-JSON
-)
-
-# Ler jobs existentes (se houver)
-JOBS_FILE="$DST_CRON/jobs.json"
-if [[ -f "$JOBS_FILE" ]]; then
-    EXISTING=$(cat "$JOBS_FILE")
-    # Verificar se já existem jobs com os mesmos nomes
-    for JOB_NAME in "update-free-models-14h" "choose-best-free-llm" "update-hermes-models"; do
-        if echo "$EXISTING" | grep -q ""$JOB_NAME""; then
-            echo "  ! Job '$JOB_NAME' já existe — não sobrescrevendo"
-        fi
-    done
-    echo "  → Mantendo jobs existentes. Para recriar, apague manualmente:"
-    echo "    rm $JOBS_FILE"
-else
-    echo "$JOBS" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-# Gerar IDs únicos para cada job
-import hashlib, time
-for job in data:
-    job['id'] = hashlib.md5(f"{job['name']}{time.time()}".encode()).hexdigest()[:12]
-    job['created_at'] = time.strftime('%Y-%m-%dT%H:%M:%S-03:00')
-    job['next_run_at'] = None
-    job['last_run_at'] = None
-    job['last_status'] = None
-    job['last_error'] = None
-    job['last_delivery_error'] = None
-    job['last_delivery_unverified'] = None
-    job['last_dispatch'] = None
-    job['fire_claim'] = None
-    job['skills'] = []
-    job['skill'] = None
-    job['model'] = None
-    job['provider'] = None
-    job['provider_snapshot'] = None
-    job['model_snapshot'] = None
-    job['base_url'] = None
-    job['monitor_script'] = None
-    job['monitor_url'] = None
-    job['monitor_state'] = None
-    job['context_from'] = None
-    job['paused_at'] = None
-    job['paused_reason'] = None
-    job['origin'] = None
-    job['enabled_toolsets'] = None
-    job['workdir'] = None
-    job['schedule_display'] = job['schedule']['expr']
-    job['repeat']['completed'] = 0
-    print(json.dumps(data, indent=2, ensure_ascii=False))
-" > "$JOBS_FILE"
-    echo "  ✓ 3 cron jobs criados em $JOBS_FILE"
-fi
-
-# ─── Resultado ────────────────────────────────────────────────────────────────
-echo ""
-echo "=== Instalação concluída ==="
-echo ""
-echo "Para verificar:"
-echo "  hermes cron list --profile $PROFILE"
-echo ""
-echo "Para rodar agora:"
-echo "  HERMES_HOME=$HERMES_HOME python3 $DST_SCRIPTS/update_free_models.py"
-echo "  HERMES_HOME=$HERMES_HOME python3 $DST_SCRIPTS/update_models.py"
-echo ""
-echo "Para desinstalar:"
-echo "  rm -f $DST_SCRIPTS/update_{free_,}models.py $DST_SCRIPTS/choose_best_free_llm.py"
-echo "  rm -f $JOBS_FILE  # e recriar sem os jobs"
+echo "=== Teste (simulação, não grava) ==="
+echo "  cd $DST && HERMES_HOME=$HERMES_HOME python3 run_model_selector_v4.py --dry-run --force --no-restart"

@@ -545,9 +545,16 @@ def assert_free_models(*model_ids):
 
 def gateway_unit_name(hermes_home) -> str:
     """Serviço systemd do gateway do perfil dono de hermes_home."""
+    # Perfil servido pelo host gateway multiplex: o unit standalone do perfil fica
+    # desabilitado; reiniciá-lo o fazia entrar em loop (exit 75, Restart=always).
+    import subprocess
     home = Path(hermes_home)
     if home.parent.name == "profiles":
-        return f"hermes-gateway-{home.name}.service"
+        unit = f"hermes-gateway-{home.name}.service"
+        r = subprocess.run(["systemctl", "--user", "is-enabled", unit],
+                           capture_output=True, text=True)
+        if r.stdout.strip() == "enabled":
+            return unit
     return "hermes-gateway.service"
 
 
