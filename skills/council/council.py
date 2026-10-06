@@ -45,6 +45,11 @@ ENV_PATH = HERMES_HOME / ".env"
 STATE_PATH = Path(os.environ.get("COUNCIL_STATE_DIR") or Path(__file__).resolve().parent / "state")
 STATE_PATH.mkdir(parents=True, exist_ok=True)
 
+# Timeout por membro no estágio 1 (um modelo lento não segura a rodada) e
+# quantas vezes cada posição pode ser trocada por um reserva após falhar.
+MEMBER_TIMEOUT_S = float(os.environ.get("COUNCIL_MEMBER_TIMEOUT", "120"))
+MEMBER_SWAPS = int(os.environ.get("COUNCIL_MEMBER_SWAPS", "2"))
+
 
 def _load_profile_env():
     """O perfil guarda chaves em <perfil>/.env.
@@ -114,6 +119,7 @@ class CouncilResult:
     chairman_model: str
     final: str
     total_elapsed_s: float
+    swaps: list = None  # trocas automáticas de membro: [{slot, from, to, reason}]
 
 
 # ---------------------------------------------------------------- config ---
@@ -199,15 +205,6 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
         candidates.append(aggregator)
     candidates += refs + fallbacks
 
-    def _provider_key(entry: dict) -> str:
-        """Provider real: 'custom' é desambiguado pelo host (Cloudflare ≠ Nous)."""
-        prov = str(entry.get("provider") or "")
-        if prov == "custom":
-            from urllib.parse import urlparse
-            host = urlparse(str(entry.get("base_url") or "")).hostname or ""
-            return "custom:" + ".".join(host.split(".")[-2:])
-        return prov
-
     # 1 membro por provider: chamadas paralelas no mesmo provider estouram
     # rate limit (429). 1ª passada só providers inéditos; 2ª completa repetindo.
     members: list[Member] = []
@@ -222,7 +219,7 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
             key = mid.lower().removesuffix(":free")
             if not mid or key in seen or entry.get("provider") == "moa":
                 continue
-            pkey = _provider_key(entry)
+            pkey = provider_key(entry)
             if pkey in used_providers and not allow_repeat:
                 continue
             api_key = _resolve_api_key(entry)
@@ -247,6 +244,121 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
         raise RuntimeError(f"Council precisa de >=2 membros com chave; achei {len(members)}")
     chairman = members[0]  # model.default
     return members, chairman
+
+
+# ---------------------------------------------------------------- reserva ---
+# Endpoints por fonte do catálogo do seletor free-llm (model-selector/catalog.json).
+_SOURCE_ENDPOINTS = {
+    "nvidia": ("nvidia", "https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
+    "openrouter": ("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "nous": ("custom", "https://inference-api.nousresearch.com/v1", "NOUS_API_KEY"),
+    "cloudflare": ("custom", "https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1",
+                   "CLOUDFLARE_API_TOKEN"),
+}
+# IDs que não são modelos de conversa (parsers, safety etc.)
+_NOT_CHAT = ("parse", "guard", "safety", "embed", "rerank", "translate", "detector")
+
+
+def provider_key(m: "Member | dict") -> str:
+    """Provider real do membro/entrada: 'custom' é diferenciado pelo host."""
+    from urllib.parse import urlparse
+    prov = m.provider if isinstance(m, Member) else str(m.get("provider") or "")
+    base = m.base_url if isinstance(m, Member) else str(m.get("base_url") or "")
+    if prov == "custom":
+        host = urlparse(base).hostname or ""
+        return "custom:" + ".".join(host.split(".")[-2:])
+    return prov
+
+
+def _read_json(path: Path) -> dict | list:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def load_reserves(exclude_models: set[str], limit: int = 12) -> list[Member]:
+    """Reserva para substituir membros que falham (429/timeout/vazio).
+
+    Fonte = avaliação automática do seletor free-llm: entradas do config.yaml
+    ainda não usadas (MoA/fallbacks) e depois o catalog.json inteiro, por índice
+    de inteligência da Artificial Analysis. Exclui quarentena (reliability.json,
+    >=3 falhas seguidas) e recusados por plano (not_free.json). Sem catálogo
+    (free-llm não instalado) a reserva usa só o config.
+    """
+    sel = HERMES_HOME / "model-selector"
+    rel = _read_json(sel / "reliability.json") or {}
+    not_free = _read_json(sel / "not_free.json") or {}
+    catalog = _read_json(sel / "catalog.json")
+    cat = catalog.get("models", []) if isinstance(catalog, dict) else []
+    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+
+    entries: list[dict] = []
+    try:
+        cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        moa = cfg.get("moa") or {}
+        preset = (moa.get("presets") or {}).get(moa.get("default_preset") or "default") or {}
+        entries += [preset.get("aggregator") or moa.get("aggregator") or {}]
+        entries += preset.get("reference_models") or moa.get("reference_models") or []
+        entries += cfg.get("fallback_providers") or []
+    except (OSError, yaml.YAMLError):
+        pass
+
+    def score(c: dict) -> float:
+        aa = c.get("aa") or {}
+        if aa.get("intel") is not None:
+            return 100 + float(aa["intel"])          # com benchmark vem antes
+        return float((c.get("capabilities") or {}).get("reasoning") or 0)
+
+    cat_entries: list[dict] = []
+    for c in sorted(cat, key=score, reverse=True):
+        src = c.get("source")
+        if src not in _SOURCE_ENDPOINTS or c.get("model") in not_free:
+            continue
+        fails = int((rel.get(f"{src}::{c.get('family')}") or {}).get("fails", 0))
+        if fails >= 3:
+            continue
+        if src == "cloudflare" and not account:
+            continue
+        prov, base, key_env = _SOURCE_ENDPOINTS[src]
+        cat_entries.append({"provider": prov, "model": c["model"], "_fails": fails,
+                            "base_url": base.format(account=account), "key_env": key_env})
+    # falha recente vai para o fim da fila do catálogo (sort estável mantém a qualidade)
+    cat_entries.sort(key=lambda e: 1 if e["_fails"] > 0 else 0)
+    entries += cat_entries
+
+    out: list[Member] = []
+    seen = {m.lower().removesuffix(":free") for m in exclude_models}
+    for e in entries:
+        mid = str(e.get("model") or "")
+        k = mid.lower().removesuffix(":free")
+        if not mid or k in seen or e.get("provider") == "moa" or any(t in k for t in _NOT_CHAT):
+            continue
+        api_key = _resolve_api_key(e)
+        if not api_key or not e.get("base_url"):
+            continue
+        seen.add(k)
+        out.append(Member(name=f"r-{mid.split('/')[-1][:20]}", provider=e["provider"],
+                          model=mid, base_url=str(e["base_url"]).rstrip("/"),
+                          api_key=api_key, api_mode=e.get("api_mode", "chat_completions")))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def pick_reserve(reserves: list[Member], active_providers: "list[str] | set[str]",
+                 failed_providers: set[str]) -> Optional[Member]:
+    """Próximo reserva, sem provider que falhou nesta rodada: primeiro provider
+    fora do council; senão o provider com MENOS membros ativos (espalha a carga
+    em vez de empilhar no mesmo). Remove o escolhido da lista."""
+    from collections import Counter
+    load = Counter(active_providers)
+    ok = [(i, r) for i, r in enumerate(reserves) if provider_key(r) not in failed_providers]
+    if not ok:
+        return None
+    # ordem estável (prioridade da lista) desempatando pela carga do provider
+    i, _ = min(ok, key=lambda t: (load.get(provider_key(t[1]), 0), t[0]))
+    return reserves.pop(i)
 
 
 # ---------------------------------------------------------------- client ---
@@ -290,17 +402,48 @@ async def _chat(client: httpx.AsyncClient, m: Member, messages: list[dict],
 
 
 # ---------------------------------------------------------------- stages ---
-async def stage_one(query: str, members: list[Member]) -> list[StageOneResult]:
-    """Cada membro responde a query independentemente, em paralelo."""
+async def stage_one(query: str, members: list[Member],
+                    reserves: Optional[list[Member]] = None,
+                    swaps: Optional[list[dict]] = None) -> list[StageOneResult]:
+    """Cada membro responde a query independentemente, em paralelo.
+
+    Membro que falha (429/timeout/vazio, após os retries) é trocado na hora por
+    um reserva de outro provider — de preferência fora do council (rate limit é
+    por provider) — até MEMBER_SWAPS trocas por posição. A lista ``members`` é
+    atualizada in place para os estágios 2/3 usarem quem de fato respondeu.
+    """
+    reserves = reserves if reserves is not None else []
+    swaps = swaps if swaps is not None else []
+    failed_providers: set[str] = set()
+    lock = asyncio.Lock()
+
     async with httpx.AsyncClient() as client:
-        async def one(m: Member) -> StageOneResult:
-            t0 = time.time()
-            try:
-                text = await _chat(client, m, [{"role": "user", "content": query}])
-                return StageOneResult(m.name, m.model, text, time.time() - t0)
-            except Exception as e:
-                return StageOneResult(m.name, m.model, "", time.time() - t0, error=str(e))
-        return await asyncio.gather(*[one(m) for m in members])
+        async def one(idx: int) -> StageOneResult:
+            m = members[idx]
+            for attempt in range(MEMBER_SWAPS + 1):
+                t0 = time.time()
+                try:
+                    text = await asyncio.wait_for(
+                        _chat(client, m, [{"role": "user", "content": query}]),
+                        timeout=MEMBER_TIMEOUT_S)
+                    return StageOneResult(m.name, m.model, text, time.time() - t0)
+                except Exception as e:  # noqa: BLE001 — qualquer falha = trocar membro
+                    err = f"{type(e).__name__}: {e}"[:200] if str(e) else type(e).__name__
+                    async with lock:
+                        failed_providers.add(provider_key(m))
+                        active = [provider_key(x) for j, x in enumerate(members) if j != idx]
+                        sub = pick_reserve(reserves, active, failed_providers) if attempt < MEMBER_SWAPS else None
+                        if sub is not None:
+                            sub.name = f"m{idx + 1}-{sub.model.split('/')[-1][:20]}"
+                            sub.persona = m.persona
+                            swaps.append({"slot": idx + 1, "from": m.model, "to": sub.model,
+                                          "reason": err[:120]})
+                            members[idx] = sub   # visível aos outros slots já na próxima escolha
+                    if sub is None:
+                        return StageOneResult(m.name, m.model, "", time.time() - t0, error=err)
+                    m = sub
+            return StageOneResult(m.name, m.model, "", 0.0, error="sem reserva")
+        return await asyncio.gather(*[one(i) for i in range(len(members))])
 
 
 def _anonymize(stage1: list[StageOneResult]) -> tuple[list[tuple[str, str]], dict[str, str]]:
@@ -312,10 +455,36 @@ def _anonymize(stage1: list[StageOneResult]) -> tuple[list[tuple[str, str]], dic
     return anon, label_to_member
 
 
+def _parse_ranking(raw: str, valid_labels: list[str]) -> list[str]:
+    """Extrai o ranking de forma tolerante: JSON array; senão, ordem em que os
+    rótulos 'Response X' aparecem no texto (modelos de raciocínio costumam
+    escrever prosa ou cortar o JSON). Só rótulos válidos, sem repetição."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.split("```")[1].lstrip("json").strip()
+    start, end = s.find("["), s.rfind("]")
+    if start >= 0 and end > start:
+        try:
+            arr = json.loads(s[start:end + 1])
+            out = [x for x in arr if isinstance(x, str) and x in valid_labels]
+            if len(out) >= 2:
+                return list(dict.fromkeys(out))
+        except ValueError:
+            pass
+    # fallback: última ocorrência de uma lista de rótulos no texto
+    found = re.findall(r"Response\s+([A-Z])\b", s)
+    out = list(dict.fromkeys(f"Response {x}" for x in found if f"Response {x}" in valid_labels))
+    return out if len(out) >= 2 else []
+
+
 async def stage_two(query: str, stage1: list[StageOneResult], members: list[Member]) -> tuple[list[StageTwoReview], dict[str, str]]:
     anon, label_to_member = _anonymize(stage1)
     if len(anon) < 2:
         return [], label_to_member
+    valid_labels = [lab for lab, _ in anon]
+    # Só quem respondeu no estágio 1 avalia (quem falhou tende a falhar de novo).
+    answered = {s.member for s in stage1 if not s.error and s.text}
+    reviewers = [m for m in members if m.name in answered] or members
 
     responses_block = "\n\n".join(f"{lab}:\n{txt}" for lab, txt in anon)
     prompt = (
@@ -330,18 +499,16 @@ async def stage_two(query: str, stage1: list[StageOneResult], members: list[Memb
     async with httpx.AsyncClient() as client:
         async def one(m: Member) -> StageTwoReview:
             try:
-                raw = await _chat(client, m, [{"role": "user", "content": prompt}],
-                                  temperature=0.0, max_tokens=512)
-                # extração tolerante a markdown
-                s = raw.strip()
-                if s.startswith("```"):
-                    s = s.split("```")[1].lstrip("json").strip()
-                start = s.find("["); end = s.rfind("]")
-                ranking = json.loads(s[start:end+1]) if start >= 0 else []
-                return StageTwoReview(m.name, m.model, ranking, raw)
-            except Exception as e:
-                return StageTwoReview(m.name, m.model, [], "", error=str(e))
-        reviews = await asyncio.gather(*[one(m) for m in members])
+                raw = await asyncio.wait_for(
+                    _chat(client, m, [{"role": "user", "content": prompt}],
+                          temperature=0.0, max_tokens=2048),
+                    timeout=MEMBER_TIMEOUT_S)
+                ranking = _parse_ranking(raw, valid_labels)
+                err = None if ranking else "ranking não reconhecido na resposta"
+                return StageTwoReview(m.name, m.model, ranking, raw[:2000], error=err)
+            except Exception as e:  # noqa: BLE001
+                return StageTwoReview(m.name, m.model, [], "", error=f"{type(e).__name__}: {e}"[:200])
+        reviews = await asyncio.gather(*[one(m) for m in reviewers])
         return reviews, label_to_member
 
 
@@ -418,19 +585,30 @@ async def run_council(query: str, top_n: int = 4, pool_path: str | None = None,
                 m.persona = "ponytail"
                 break
 
-    s1 = await stage_one(query, members)
+    reserves = load_reserves({m.model for m in members}) if pool_path is None else []
+    swaps: list[dict] = []
+    s1 = await stage_one(query, members, reserves=reserves, swaps=swaps)
     anon, label_map = _anonymize(s1)
     s2, label_map = await stage_two(query, s1, members)
-    try:
-        final = await stage_three(query, s1, s2, label_map, chairman)
-        chairman_used = chairman.model
-    except Exception as e:
-        # chairman indisponível → primeiro membro que respondeu assume
-        fallback = next((m for m in members if any(s.member == m.name and not s.error for s in s1)), None)
-        if fallback is None:
-            raise RuntimeError(f"Chairman falhou ({e}) e nenhum membro respondeu")
-        final = await stage_three(query, s1, s2, label_map, fallback)
-        chairman_used = f"{fallback.model} (fallback: chairman falhou)"
+
+    # Chairman: o MAIN se respondeu no estágio 1; senão (ou se a síntese falhar)
+    # o próximo membro que respondeu, em ordem de prioridade.
+    answered = [m for m in members if any(s.member == m.name and not s.error for s in s1)]
+    order = ([chairman] if chairman in members else []) + [m for m in answered if m is not chairman]
+    if not answered:
+        raise RuntimeError("Nenhum membro respondeu (nem os reservas).")
+    final, chairman_used, last_err = "", "", None
+    for i, cand in enumerate(order):
+        try:
+            final = await asyncio.wait_for(
+                stage_three(query, s1, s2, label_map, cand), timeout=MEMBER_TIMEOUT_S * 2)
+            chairman_used = cand.model if i == 0 and cand is chairman else \
+                f"{cand.model} (chairman substituto)"
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    if not final:
+        raise RuntimeError(f"Síntese falhou em todos os candidatos a chairman ({last_err})")
 
     return CouncilResult(
         query=query, started_at=started,
@@ -438,6 +616,7 @@ async def run_council(query: str, top_n: int = 4, pool_path: str | None = None,
         chairman_model=chairman_used,
         final=final,
         total_elapsed_s=round(time.time() - t0, 2),
+        swaps=swaps,
     )
 
 
@@ -454,6 +633,10 @@ def to_markdown(r: CouncilResult) -> str:
         "", "## Final answer", "", (r.final or "_(sem resposta final — todos os membros/chaiman falharam)_"), "",
         "---", "", "## Stage 1 — first opinions",
     ]
+    if r.swaps:
+        lines[-1:-1] = ["## Trocas automáticas de membro", ""] + [
+            f"- slot {w['slot']}: `{w['from']}` → `{w['to']}` ({w['reason']})" for w in r.swaps
+        ] + [""]
     for s in r.stage1:
         if s.error:
             lines.append(f"- **{s.member}** (`{s.model}`) — ❌ {s.error}")

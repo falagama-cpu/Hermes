@@ -1,7 +1,7 @@
 ---
 name: council
 description: "Use when the user wants a cross-model answer (LLM council): members answer in parallel, rank each other anonymously, chairman synthesizes. Reads the Hermes profile config.yaml each run."
-version: 1.1.0
+version: 1.2.0
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -81,7 +81,24 @@ fabricantes distintos — melhor para opinião cruzada que os fallbacks, escolhi
 cobertura de falha. `provider: custom` sem `key_env` resolve a chave pela base_url
 (cloudflare.com → `CLOUDFLARE_API_TOKEN`, nousresearch.com → `NOUS_API_KEY`).
 
-Chairman indisponível (ex.: 429) → o primeiro membro que respondeu sintetiza.
+### Troca automática de membro
+
+Membro que falha no estágio 1 (429, timeout de `COUNCIL_MEMBER_TIMEOUT`=120s ou resposta
+vazia, depois dos retries) é trocado **na hora** por um reserva, até `COUNCIL_MEMBER_SWAPS`=2
+trocas por posição. Reservas, em ordem:
+
+1. slots do `config.yaml` ainda não usados (MoA/fallbacks);
+2. `model-selector/catalog.json` do [free-llm](../free-llm/SKILL.md), por índice da Artificial
+   Analysis — sem modelos em quarentena (`reliability.json`, ≥3 falhas) nem recusados por
+   plano (`not_free.json`); falha recente vai para o fim da fila.
+
+Nunca usa um provider que já falhou na mesma rodada; entre os demais, prefere o de menor carga
+no council. O estágio 2 só pede ranking a quem respondeu, e o parser aceita JSON ou prosa com
+`Response X`. Chairman: o MAIN se respondeu; senão o próximo membro que respondeu. As trocas
+ficam em `state/last.json` (`swaps`) e em `last.md`.
+
+Como o seletor free-llm reavalia o pool a cada 6h, as reservas acompanham sozinhas o que está
+vivo e gratuito — o council não mantém lista própria.
 
 ## Estratégias
 
@@ -109,6 +126,8 @@ system prompt em 1 membro — nunca o chairman. Desativar: `--no-ponytail`.
 | `COUNCIL_STATE_DIR` | onde gravar `last.json`/`last.md` (padrão `./state`) |
 | `CLOUDFLARE_ACCOUNT_ID` | `pool.py`: monta a URL da Cloudflare (vem do `.env` do perfil) |
 | `COUNCIL_POOL_BLOCKLIST` | `pool.py`: modelos a ignorar, separados por vírgula |
+| `COUNCIL_MEMBER_TIMEOUT` | segundos por membro nos estágios 1-2 (padrão 120) |
+| `COUNCIL_MEMBER_SWAPS` | trocas automáticas por posição (padrão 2) |
 
 Chaves de API são lidas do `.env` do perfil; o council nunca as grava nem imprime.
 
