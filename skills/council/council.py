@@ -199,30 +199,49 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
         candidates.append(aggregator)
     candidates += refs + fallbacks
 
+    def _provider_key(entry: dict) -> str:
+        """Provider real: 'custom' é desambiguado pelo host (Cloudflare ≠ Nous)."""
+        prov = str(entry.get("provider") or "")
+        if prov == "custom":
+            from urllib.parse import urlparse
+            host = urlparse(str(entry.get("base_url") or "")).hostname or ""
+            return "custom:" + ".".join(host.split(".")[-2:])
+        return prov
+
+    # 1 membro por provider: chamadas paralelas no mesmo provider estouram
+    # rate limit (429). 1ª passada só providers inéditos; 2ª completa repetindo.
     members: list[Member] = []
     seen: set[str] = set()
-    for entry in candidates:
+    used_providers: set[str] = set()
+    for allow_repeat in (False, True):
+        for entry in candidates:
+            if len(members) >= top_n:
+                break
+            mid = str(entry.get("model") or "")
+            # dedupe por modelo (ignora :free) — o mesmo modelo em 2 slots não soma opinião
+            key = mid.lower().removesuffix(":free")
+            if not mid or key in seen or entry.get("provider") == "moa":
+                continue
+            pkey = _provider_key(entry)
+            if pkey in used_providers and not allow_repeat:
+                continue
+            api_key = _resolve_api_key(entry)
+            base_url = entry.get("base_url") or ""
+            if not api_key or not base_url:
+                continue
+            seen.add(key)
+            used_providers.add(pkey)
+            alias = f"m{len(members)+1}-{entry['model'].split('/')[-1][:20]}"
+            members.append(Member(
+                name=alias,
+                provider=entry["provider"],
+                model=entry["model"],
+                base_url=base_url.rstrip("/"),
+                api_key=api_key,
+                api_mode=entry.get("api_mode", "chat_completions"),
+            ))
         if len(members) >= top_n:
             break
-        mid = str(entry.get("model") or "")
-        # dedupe por modelo (ignora :free) — o mesmo modelo em 2 slots não soma opinião
-        key = mid.lower().removesuffix(":free")
-        if not mid or key in seen or entry.get("provider") == "moa":
-            continue
-        api_key = _resolve_api_key(entry)
-        base_url = entry.get("base_url") or ""
-        if not api_key or not base_url:
-            continue
-        seen.add(key)
-        alias = f"m{len(members)+1}-{entry['model'].split('/')[-1][:20]}"
-        members.append(Member(
-            name=alias,
-            provider=entry["provider"],
-            model=entry["model"],
-            base_url=base_url.rstrip("/"),
-            api_key=api_key,
-            api_mode=entry.get("api_mode", "chat_completions"),
-        ))
 
     if len(members) < 2:
         raise RuntimeError(f"Council precisa de >=2 membros com chave; achei {len(members)}")

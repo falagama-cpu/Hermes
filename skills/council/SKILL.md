@@ -73,6 +73,9 @@ Prioridade:
 4. `fallback_providers` — só completam se faltar membro
 
 Dedupe por modelo (ignora `:free`); pula slots sem chave/base_url e `provider: moa`.
+**1 membro por provider** (`custom` é diferenciado pelo host: Cloudflare ≠ Nous): as chamadas
+são paralelas, e vários membros no mesmo provider estouram o rate limit (429). Só repete
+provider se faltar membro.
 Com a skill [`free-llm`](../free-llm/SKILL.md) os slots MoA são escolhidos por qualidade e
 fabricantes distintos — melhor para opinião cruzada que os fallbacks, escolhidos por
 cobertura de falha. `provider: custom` sem `key_env` resolve a chave pela base_url

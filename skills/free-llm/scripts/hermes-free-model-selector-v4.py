@@ -1633,13 +1633,29 @@ def choose_main(
 # MOA
 # =============================================================================
 
+def _unused_source_candidates(
+    models: List[Dict[str, Any]],
+    role: str,
+    used_families: Set[str],
+    used_sources: Set[str],
+) -> List[Dict[str, Any]]:
+    """Candidatos só de providers ainda não usados (1 agente por provider:
+    evita estourar o rate limit de um provider com várias chamadas paralelas
+    do MoA/council). Sem candidato em provider novo → aceita repetir."""
+    fresh = [m for m in models if m["_source"] not in used_sources]
+    return (
+        family_candidates(fresh, role, used_families, used_sources)
+        or family_candidates(models, role, used_families, used_sources)
+    )
+
+
 def choose_moa(
     models: List[Dict[str, Any]],
     used_families: Set[str],
     used_sources: Set[str],
 ) -> Optional[Dict[str, Any]]:
 
-    candidates = family_candidates(
+    candidates = _unused_source_candidates(
         models,
         "moa",
         used_families,
@@ -1692,7 +1708,7 @@ def choose_moa_references(
     vendors = set(used_vendors or set())
 
     for _ in range(max(0, count)):
-        candidates = family_candidates(models, "moa", families, sources)
+        candidates = _unused_source_candidates(models, "moa", families, sources)
         if not candidates:
             break
         chosen = max(
