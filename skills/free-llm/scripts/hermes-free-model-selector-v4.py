@@ -1112,6 +1112,121 @@ def fetch_cloudflare() -> List[Dict[str, Any]]:
 # NVIDIA NIM
 # =============================================================================
 
+# Cache do probe de descoberta: {id: {"status", "ts", "last_ok"}}.
+NVIDIA_PROBE_FILE = STATE_DIR / "nvidia_free_probe.json"
+NVIDIA_PROBE_OK_TTL_S = 24 * 3600          # 200/429 recente → não re-sonda
+NVIDIA_PROBE_DEAD_TTL_S = 7 * 24 * 3600    # 4xx permanente → pula por 7 dias
+NVIDIA_PROBE_GRACE_S = 7 * 24 * 3600       # transiente mantém quem foi OK há < 7d
+NVIDIA_PROBE_TIMEOUT = int(os.environ.get("HERMES_NVIDIA_PROBE_TIMEOUT", "20"))
+NVIDIA_PROBE_WORKERS = int(os.environ.get("HERMES_NVIDIA_PROBE_WORKERS", "10"))
+_NVIDIA_PERMANENT = {400, 401, 402, 403, 404, 410, 422}
+
+
+def _nvidia_probe_one(key: str, mid: str) -> int:
+    """POST /chat/completions mínimo. Retorna HTTP status (0 = rede/timeout)."""
+    body = json.dumps({
+        "model": mid,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        NVIDIA_BASE_URL.rstrip("/") + "/chat/completions",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Hermes-Free-MultiProvider-Selector/4.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=NVIDIA_PROBE_TIMEOUT) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+    except Exception:
+        return 0
+
+
+def nvidia_discover_free(raw_models: List[Dict[str, Any]], key: str) -> Set[str]:
+    """Sonda TODO o catálogo /models da NVIDIA e devolve os IDs normalizados
+    que respondem como Free Endpoint (200/429). Sem allowlist: modelos novos
+    entram sozinhos; os que saem do free tier (404) caem sozinhos.
+
+    - pré-filtro barato por BLOCK_TERMS no ID (guard/safety/video/tts...)
+    - cache em nvidia_free_probe.json: OK < 24h e 4xx < 7d não re-sondam
+    - transiente (timeout/5xx): mantém se teve OK nos últimos 7 dias ou se
+      está na seed DEFAULT_NVIDIA_FREE_MODELS (o probe pré-gravação re-valida)
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        cache = json.loads(NVIDIA_PROBE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+
+    seed = {normalize(x) for x in DEFAULT_NVIDIA_FREE_MODELS}
+    now = time.time()
+
+    ids = sorted({
+        model_id(r) for r in raw_models
+        if model_id(r) and not has_any(model_id(r).lower(), BLOCK_TERMS)
+    })
+
+    to_probe: List[str] = []
+    for mid in ids:
+        e = cache.get(mid) or {}
+        age = now - float(e.get("ts") or 0)
+        st = e.get("status")
+        if st in (200, 429) and age < NVIDIA_PROBE_OK_TTL_S:
+            continue
+        if st in _NVIDIA_PERMANENT and age < NVIDIA_PROBE_DEAD_TTL_S:
+            continue
+        to_probe.append(mid)
+
+    if to_probe:
+        with ThreadPoolExecutor(max_workers=max(1, NVIDIA_PROBE_WORKERS)) as ex:
+            statuses = list(ex.map(lambda m: _nvidia_probe_one(key, m), to_probe))
+        for mid, st in zip(to_probe, statuses):
+            e = cache.setdefault(mid, {})
+            e["status"] = st
+            e["ts"] = now
+            if st in (200, 429):
+                e["last_ok"] = now
+
+    # Remove do cache IDs que sumiram do /models.
+    cache = {k: v for k, v in cache.items() if k in ids}
+
+    free: Set[str] = set()
+    transient_kept: List[str] = []
+    for mid in ids:
+        e = cache.get(mid) or {}
+        st = e.get("status")
+        norm = normalize(mid)
+        if st in (200, 429):
+            free.add(norm)
+        elif st not in _NVIDIA_PERMANENT:
+            recent_ok = now - float(e.get("last_ok") or 0) < NVIDIA_PROBE_GRACE_S
+            if recent_ok or norm in seed:
+                free.add(norm)
+                transient_kept.append(mid)
+
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        NVIDIA_PROBE_FILE.write_text(json.dumps(cache, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+    new_vs_seed = sorted(m for m in ids if normalize(m) in free and normalize(m) not in seed)
+    logging.info(
+        "NVIDIA discovery: %d IDs no /models, %d sondados agora, %d free "
+        "(%d transientes mantidos); fora da seed: %s",
+        len(ids), len(to_probe), len(free), len(transient_kept),
+        ", ".join(new_vs_seed) or "-",
+    )
+    return free
+
+
 def fetch_nvidia() -> List[Dict[str, Any]]:
     key = env_first("NVIDIA_API_KEY")
 
@@ -1146,10 +1261,21 @@ def fetch_nvidia() -> List[Dict[str, Any]]:
         os.environ.get("NVIDIA_FREE_MODELS")
     )
 
-    allowlist = configured_allowlist or {
-        normalize(x)
-        for x in DEFAULT_NVIDIA_FREE_MODELS
-    }
+    # Descoberta dinâmica (padrão): TODO o /models é sondado e entra quem
+    # responde como Free Endpoint. NVIDIA_FREE_MODELS (env) = allowlist rígida;
+    # HERMES_NVIDIA_DISCOVERY=0 volta ao comportamento antigo (só a seed).
+    discovery = (
+        not configured_allowlist
+        and os.environ.get("HERMES_NVIDIA_DISCOVERY", "1") != "0"
+    )
+
+    if discovery:
+        allowlist = nvidia_discover_free(raw_models, key)
+    else:
+        allowlist = configured_allowlist or {
+            normalize(x)
+            for x in DEFAULT_NVIDIA_FREE_MODELS
+        }
 
     result = []
 
@@ -1157,8 +1283,8 @@ def fetch_nvidia() -> List[Dict[str, Any]]:
         mid = model_id(raw)
         normalized = normalize(mid)
 
-        # A API /models não informa de forma confiável o preço do endpoint.
-        # Portanto, somente aceitamos modelos presentes na allowlist Free.
+        # A API /models não informa preço: o gate é o probe (discovery)
+        # ou a allowlist (modo rígido).
         if normalized not in allowlist:
             continue
 
@@ -1524,6 +1650,59 @@ def choose_moa(
 
 
 # =============================================================================
+# MOA REFERENCE MODELS
+# =============================================================================
+
+# Quantos reference models o MoA consulta antes do aggregator (0 = não mexe).
+MOA_REFERENCE_COUNT = int(os.environ.get("HERMES_MOA_REFERENCE_COUNT", "2"))
+
+
+def _vendor(model: Dict[str, Any]) -> str:
+    """Fabricante do modelo (prefixo do ID, sem @cf/). laguna-s e laguna-xs
+    são famílias distintas mas o mesmo vendor (poolside)."""
+    mid = str(model.get("_model_id") or "").lower()
+    if mid.startswith("@cf/"):
+        mid = mid[4:]
+    return mid.split("/", 1)[0] if "/" in mid else mid
+
+
+def choose_moa_references(
+    models: List[Dict[str, Any]],
+    used_families: Set[str],
+    used_sources: Set[str],
+    count: int = MOA_REFERENCE_COUNT,
+    used_vendors: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Top-N para moa.reference_models: famílias distintas entre si e do
+    MAIN/aggregator (perspectivas diferentes = o ponto do MoA); papel "moa"
+    (intel-pesado). Prefere fabricante inédito (+8) e provider inédito (+3);
+    repete fabricante só se não houver alternativa."""
+    selected: List[Dict[str, Any]] = []
+    families = set(used_families)
+    sources = set(used_sources)
+    vendors = set(used_vendors or set())
+
+    for _ in range(max(0, count)):
+        candidates = family_candidates(models, "moa", families, sources)
+        if not candidates:
+            break
+        chosen = max(
+            candidates,
+            key=lambda m: (
+                m["_role_score"]
+                + (8 if _vendor(m) not in vendors else 0)
+                + (3 if m["_source"] not in sources else 0)
+            ),
+        )
+        selected.append(chosen)
+        families.add(chosen["_family"])
+        sources.add(chosen["_source"])
+        vendors.add(_vendor(chosen))
+
+    return selected
+
+
+# =============================================================================
 # FALLBACKS
 # =============================================================================
 
@@ -1864,11 +2043,14 @@ def apply_config(
     main: Dict[str, Any],
     moa: Optional[Dict[str, Any]],
     fallbacks: List[Dict[str, Any]],
+    moa_refs: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Grava a seleção nos caminhos REAIS do config.yaml do Hermes:
 
       - model.default / model.provider / model.base_url
       - moa.aggregator + moa.presets.default.aggregator  (MOA/REVIEW)
+      - moa.reference_models + moa.presets.default.reference_models
+        (só se moa_refs não-vazio; senão preserva o que existe)
       - auxiliary.moa_aggregator + auxiliary.moa_reference
       - fallback_providers  (cadeia completa, SEM repetir o MAIN)
 
@@ -1904,11 +2086,23 @@ def apply_config(
 
     moa_cfg["aggregator"] = copy.deepcopy(agg)
 
+    # Reference models: formato {provider, model, base_url, [key_env], enabled}.
+    ref_cfg: Optional[List[Dict[str, Any]]] = None
+    if moa_refs:
+        ref_cfg = []
+        for ref in moa_refs:
+            e = config_entry(ref)
+            e["enabled"] = True
+            ref_cfg.append(e)
+        moa_cfg["reference_models"] = copy.deepcopy(ref_cfg)
+
     presets = moa_cfg.setdefault("presets", {})
     if isinstance(presets, dict):
         default_preset = presets.setdefault("default", {})
         if isinstance(default_preset, dict):
             default_preset["aggregator"] = copy.deepcopy(agg)
+            if ref_cfg is not None:
+                default_preset["reference_models"] = copy.deepcopy(ref_cfg)
 
     # ---- auxiliary.moa_aggregator / auxiliary.moa_reference ----
     auxiliary = config.setdefault("auxiliary", {})
@@ -2398,9 +2592,9 @@ def run(args: argparse.Namespace) -> int:
     # a posição é re-selecionada. Evita gravar MAIN/MOA quebrado no config.
     # -------------------------------------------------------------------------
 
-    if not args.skip_probe:
-        dead_families: Set[str] = set()
+    dead_families: Set[str] = set()
 
+    if not args.skip_probe:
         # MAIN precisa responder; tenta re-selecionar até achar um vivo.
         for _ in range(8):
             if probe_ok(final_main):
@@ -2489,6 +2683,55 @@ def run(args: argparse.Namespace) -> int:
 
         final_fallbacks = validated_fallbacks
 
+    # -------------------------------------------------------------------------
+    # MOA REFERENCE MODELS — v4 é o único escritor (substitui update_models.py).
+    # Famílias distintas de MAIN/aggregator; não excluímos famílias dos
+    # fallbacks (papéis distintos; o pool free não comporta exclusão total).
+    # -------------------------------------------------------------------------
+    final_moa_refs: List[Dict[str, Any]] = []
+    if MOA_REFERENCE_COUNT > 0:
+        ref_dead: Set[str] = set(dead_families)
+        ref_used_fam = {final_main["_family"]}
+        ref_used_src = {final_main["_source"]}
+        if final_moa:
+            ref_used_fam.add(final_moa["_family"])
+            ref_used_src.add(final_moa["_source"])
+        for _ in range(6):
+            need = MOA_REFERENCE_COUNT - len(final_moa_refs)
+            if need <= 0:
+                break
+            pool = [m for m in models if m["_family"] not in ref_dead]
+            cands = choose_moa_references(
+                pool,
+                ref_used_fam | {r["_family"] for r in final_moa_refs},
+                ref_used_src | {r["_source"] for r in final_moa_refs},
+                count=need,
+                used_vendors={_vendor(final_main)}
+                | ({_vendor(final_moa)} if final_moa else set())
+                | {_vendor(r) for r in final_moa_refs},
+            )
+            if not cands:
+                break
+            for ref in cands:
+                if args.skip_probe or probe_ok(ref):
+                    final_moa_refs.append(ref)
+                else:
+                    logging.warning(
+                        "MOA_REF %s falhou no probe; re-selecionando.",
+                        ref["_model_id"],
+                    )
+                    ref_dead.add(ref["_family"])
+        if len(final_moa_refs) < MOA_REFERENCE_COUNT:
+            logging.warning(
+                "MoA: só %d/%d reference models válidos.",
+                len(final_moa_refs), MOA_REFERENCE_COUNT,
+            )
+        for i, ref in enumerate(final_moa_refs, 1):
+            logging.info(
+                "MOA_REF%d: %s (%s) score=%.1f",
+                i, ref["_model_id"], ref["_source"], score_role(ref, "moa"),
+            )
+
     validate_final_selection(
         final_main,
         final_moa,
@@ -2516,6 +2759,7 @@ def run(args: argparse.Namespace) -> int:
             final_main,
             final_moa,
             final_fallbacks,
+            final_moa_refs,
         )
 
         # Validação YAML antes de qualquer alteração.
@@ -2599,6 +2843,7 @@ def run(args: argparse.Namespace) -> int:
         "gateway_active": gateway_active,
         "main": serialize_model(final_main),
         "moa": serialize_model(final_moa),
+        "moa_references": [serialize_model(r) for r in final_moa_refs],
         "fallbacks": [
             serialize_model(item)
             for item in final_fallbacks
@@ -2613,6 +2858,7 @@ def run(args: argparse.Namespace) -> int:
         "gateway_active": gateway_active,
         "main": serialize_model(final_main),
         "moa": serialize_model(final_moa),
+        "moa_references": [serialize_model(r) for r in final_moa_refs],
         "fallbacks": [
             serialize_model(item)
             for item in final_fallbacks

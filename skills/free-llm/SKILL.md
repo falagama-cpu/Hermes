@@ -73,7 +73,7 @@ Ao instalar via agente: rode `--check` primeiro e, se faltar dependência ou cha
 |---|---|---|
 | `choose-best-free-llm` | 02/08/14/20h | `run_model_selector_v4.py` |
 
-**Nunca deixe outro script gravando `model.default`** (ex.: legados `update-hermes-models`/`update-free-models-14h`): com dois escritores o modelo depende de quem rodou por último e parece "não trocar". O instalador avisa se encontrar job legado.
+**Nunca deixe outro script gravando `model.default`** (ex.: legados `update-hermes-models`/`update-free-models-14h`): com dois escritores o modelo depende de quem rodou por último e parece "não trocar" — ou ALTERNA a cada poucas horas (sintoma real: v4 gravava kimi-k3 às 02/08/14/20h e o `update_models.py` gravava nemotron-3-super às 09/21h). O v4 é o **único escritor** de MAIN, `moa.aggregator`, `moa.reference_models` e `fallback_providers`; o instalador avisa se encontrar job legado. Diagnóstico: compare `config.yaml` × `state.json` e a origem do último backup em `backups/config/`.
 
 Gateway: em setup multiplex (um `hermes-gateway.service` servindo vários perfis) o seletor reinicia o host; só usa `hermes-gateway-<perfil>.service` se estiver **ativo**. Override: env `HERMES_GATEWAY_UNIT`. Reiniciar unit standalone desabilitado causa loop (exit 75, `Restart=always`).
 
@@ -97,9 +97,9 @@ Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`),
 2. **Exclusões antes do score**: `not_free.json` (recusados por plano, 7 dias) e quarentena de `reliability.json` (≥3 falhas seguidas).
 3. **Anotação AA** (`aa_scores.annotate`) e gravação do `catalog.json`.
 4. **Score por papel** (`score_role`): com benchmark = 0.85×score AA + 0.15×heurística; sem benchmark e AA ativa = heurística − 10; menos penalidade de latência/falhas. Pesos AA: main 40% coding + 35% agentic + 25% intel; moa 60% intel + 20/20; reasoning 80% intel; long_context 50% contexto + 50% intel.
-5. **Seleção** sem repetir família (dedupe cross-provider ignorando `:free`/provider): MAIN, MOA, F1 coding / F2 reasoning / F3 long-context.
+5. **Seleção** sem repetir família (dedupe cross-provider ignorando `:free`/provider): MAIN, MOA (aggregator), **MOA_REF1..N** (`moa.reference_models`, `HERMES_MOA_REFERENCE_COUNT`=2; papel moa, famílias ≠ MAIN/aggregator, +8 p/ fabricante inédito, +3 p/ provider inédito — podem coincidir com fallbacks, papéis distintos), F1 coding / F2 reasoning / F3 long-context.
 6. **Probe antes de gravar** (`POST /chat/completions`, 15s): ∉ {200,429} → descarta e re-seleciona. Cloudflare 403 com `code 5035`/"Workers Free plan" → `mark_not_free()`.
-7. **Gravação**: `model.default/provider/base_url`, `moa.aggregator` + `moa.presets.default.aggregator`, `auxiliary.moa_*`, `fallback_providers`. Nous e Cloudflare como `provider: custom` + `key_env` (nunca `custom:nome`). Backup + escrita atômica.
+7. **Gravação**: `model.default/provider/base_url`, `moa.aggregator` + `moa.presets.default.aggregator`, `moa.reference_models` + `moa.presets.default.reference_models` (só se houver refs válidos; senão preserva), `auxiliary.moa_*`, `fallback_providers`. Nous e Cloudflare como `provider: custom` + `key_env` (nunca `custom:nome`). Backup + escrita atômica.
 8. **Warm-up + restart** `--no-block` do gateway (em `--cron-mode` o warm-up vem antes, para não matar o próprio ticker).
 
 ## Relatório do cron
@@ -138,12 +138,25 @@ Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde est�
 5. Sincronize as 3 cópias (repo, skill local, `<perfil>/scripts/` com `.bak-<ts>`) e confira com `diff -rq --exclude __pycache__`.
 6. Confira a próxima execução agendada no Telegram ou em `cron/output/<job-id>/`.
 
+## Fontes de score (benchmarks)
+
+A AA é a única fonte de score do seletor. Antes de adicionar outra (leaderboard, dataset,
+eval externa), siga `references/benchmark-sources.md`:
+
+1. **Frescor primeiro** — confira a data do próprio dataset (`lastModified` na API do HF,
+   ou o máximo da coluna de submissão). Fonte congelada não entra.
+2. **Meça a sobreposição** com a AA pelo mesmo matching de tokens (`scripts/measure_source_overlap.py`)
+   e decida pelo **ganho líquido** — modelos que só a nova fonte cobre — não pela contagem bruta.
+3. **Semântica** — `score_role` usa índices por papel (coding/agentic/intel); média genérica
+   de benchmark não mapeia para papel nenhum.
+
 ## Armadilhas
 
 - **"O modelo não troca"**: primeiro confira `history.jsonl` — o v4 é determinístico, mesmo catálogo = mesmo MAIN. Depois confira se outro job grava `model.default`.
 - **AA — índice agentic vem `null` em todos os modelos no tier free**: o código usa o intelligence index no lugar. Endpoint `GET https://artificialanalysis.ai/api/v2/data/llms/models`, header `x-api-key`, ~688 modelos. Cache 24h; API fora → cache até 30 dias. Atribuição à AA é exigida pelos termos.
 - **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura real: ~32-39 de ~56-63 free; sem benchmark: poolside/laguna, longcat-2.5, apodex-mini, dots-3.
 - **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago na conta (kimi-k2.6/k2.7-code, deepseek-v4-pro/flash, glm-5.2/5.3/5.3-flash). O dashboard `dash.cloudflare.com/<acct>/ai/models` lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
+- **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.
 - **Metadados esparsos** (NVIDIA/Cloudflare sem description/contexto): `infer_sparse_metadata` + `MODEL_ID_HINTS`. Com a AA ativa isso pesa só 15%, mas cubra IDs novos para o fallback heurístico.
 - **Confiabilidade**: `reliability.json` por `source::family` — EMA de latência (8s–45s desconta até 25 pts) + falhas (12 pts cada, teto 2); ≥3 falhas seguidas = quarentena.
 - **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo. Restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).
@@ -160,4 +173,6 @@ Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde est�
 
 - `references/legacy-scripts.md` — `update_models.py`/`update_free_models.py` (pausados), regex YAML, MoA multimodal
 - `references/public-publishing.md` — gate de sanitização do repo público e receita de teste do instalador em HOME limpo
+- `references/benchmark-sources.md` — candidatos a fonte de score (Artificial Analysis, Open LLM Leaderboard, Deepeval): frescor, cobertura medida e veredito
+- `scripts/measure_source_overlap.py` — mede o ganho líquido de uma fonte de benchmark sobre o pool free
 - https://artificialanalysis.ai/data-api/docs · https://openrouter.ai/docs · https://docs.nvidia.com/nim/ · https://developers.cloudflare.com/workers-ai/

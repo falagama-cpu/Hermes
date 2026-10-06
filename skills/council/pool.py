@@ -15,12 +15,12 @@ import time
 
 import httpx
 
-sys.path.insert(0, "<council-dir>")
-from council import _load_profile_env  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from council import HERMES_HOME, _load_profile_env  # noqa: E402
 
 _load_profile_env()
 
-SEL = pathlib.Path.home() / ".hermes/profiles/<perfil>/model-selector"
+SEL = HERMES_HOME / "model-selector"
 POOL_OUT = pathlib.Path("/tmp/pool_vivos.json")
 
 URLS = {
@@ -29,7 +29,7 @@ URLS = {
     "nous": ("https://inference-api.nousresearch.com/v1", "NOUS_API_KEY"),
     "cloudflare": (
         "https://api.cloudflare.com/client/v4/accounts/"
-        "<CLOUDFLARE_ACCOUNT_ID>/ai/v1",
+        + os.environ.get("CLOUDFLARE_ACCOUNT_ID", "<CLOUDFLARE_ACCOUNT_ID>") + "/ai/v1",
         "CLOUDFLARE_API_TOKEN",
     ),
 }

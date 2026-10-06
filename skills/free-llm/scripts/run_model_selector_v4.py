@@ -29,15 +29,18 @@ TIMEOUT = 1500
 
 
 def snapshot() -> dict:
-    """Lê model.default, moa.aggregator e fallbacks do config.yaml."""
+    """Lê model.default, moa.aggregator, moa.reference_models e fallbacks do config.yaml."""
     import yaml
 
     c = yaml.safe_load(CONFIG.read_text()) or {}
     m = c.get("model") or {}
-    agg = (c.get("moa") or {}).get("aggregator") or {}
+    moa = c.get("moa") or {}
+    agg = moa.get("aggregator") or {}
     return {
         "main": f"{m.get('default')} ({m.get('provider')})",
         "moa": f"{agg.get('model')} ({agg.get('provider')})",
+        "refs": [f"{r.get('model')} ({r.get('provider')})"
+                 for r in moa.get("reference_models") or []],
         "fallbacks": [f"{f.get('model')} ({f.get('provider')})"
                       for f in c.get("fallback_providers") or []],
     }
@@ -87,6 +90,7 @@ def main() -> int:
             # Simulação: config não é gravado; mostra a seleção proposta do state.json.
             fmt = lambda m: f"{(m or {}).get('model')} ({(m or {}).get('provider')})"
             after = {"main": fmt(st.get("main")), "moa": fmt(st.get("moa")),
+                     "refs": [fmt(r) for r in st.get("moa_references") or []],
                      "fallbacks": [fmt(f) for f in st.get("fallbacks") or []]}
         exp = (st.get("main") or {}).get("model")
         if not dry and exp and exp not in after["main"]:
@@ -106,6 +110,10 @@ def main() -> int:
         diff_line("MAIN", before["main"], after["main"]),
         diff_line("MOA", before["moa"], after["moa"]),
     ]
+    for i in range(max(len(before["refs"]), len(after["refs"]))):
+        a = before["refs"][i] if i < len(before["refs"]) else "—"
+        b = after["refs"][i] if i < len(after["refs"]) else "—"
+        lines.append(diff_line(f"REF{i + 1}", a, b))
     for i in range(max(len(before["fallbacks"]), len(after["fallbacks"]))):
         a = before["fallbacks"][i] if i < len(before["fallbacks"]) else "—"
         b = after["fallbacks"][i] if i < len(after["fallbacks"]) else "—"

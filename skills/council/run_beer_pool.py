@@ -8,7 +8,7 @@ import pathlib
 import sys
 import time
 
-sys.path.insert(0, "<council-dir>")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import council  # noqa: E402
 
 PROMPT = pathlib.Path("/tmp/prompt.txt")

@@ -1,6 +1,7 @@
-# Hermes Council — Mixture-of-Agents dinâmico sobre o perfil <perfil>
-# Lê ~/.hermes/profiles/<perfil>/config.yaml a cada execução
-# (seletor v4 roda 02/08/14/20h e atualiza model.default + fallback_providers)
+# Hermes Council — Mixture-of-Agents dinâmico sobre um perfil Hermes
+# Lê $HERMES_HOME/config.yaml a cada execução (HERMES_HOME = diretório do
+# perfil, ex.: ~/.hermes/profiles/<perfil>; padrão ~/.hermes). O seletor
+# free-LLM v4 atualiza model.default, moa.* e fallback_providers.
 #
 # Estágios (cópia minimal do llm-council, sem servidor/web):
 #   1. Cada membro responde à query em paralelo
@@ -22,14 +23,15 @@ from typing import Optional
 import httpx
 import yaml
 
-CONFIG_PATH = Path.home() / ".hermes/profiles/<perfil>/config.yaml"
-ENV_PATH = Path.home() / ".hermes/profiles/<perfil>/.env"
-STATE_PATH = Path.home() / "hermes-council/state"
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+CONFIG_PATH = HERMES_HOME / "config.yaml"
+ENV_PATH = HERMES_HOME / ".env"
+STATE_PATH = Path(os.environ.get("COUNCIL_STATE_DIR") or Path(__file__).resolve().parent / "state")
 STATE_PATH.mkdir(parents=True, exist_ok=True)
 
 
 def _load_profile_env():
-    """Perfil <perfil> guarda chaves em ~/.hermes/profiles/<perfil>/.env.
+    """O perfil guarda chaves em $HERMES_HOME/.env.
     Carrega em os.environ sem sobrescrever valores já definidos."""
     if not ENV_PATH.exists():
         return
@@ -106,6 +108,13 @@ def _resolve_api_key(entry: dict) -> Optional[str]:
         return os.environ[key_env]
 
     provider = entry.get("provider", "")
+    # provider custom sem key_env: infere pela base_url (Cloudflare ≠ Nous)
+    base = str(entry.get("base_url") or "").lower()
+    if provider == "custom":
+        if "cloudflare.com" in base:
+            return os.environ.get("CLOUDFLARE_API_TOKEN") or None
+        if "nousresearch.com" in base:
+            return os.environ.get("NOUS_API_KEY") or None
     # convenções do Hermes
     candidates = {
         "nvidia": ["NVIDIA_API_KEY"],
@@ -124,7 +133,8 @@ def _resolve_api_key(entry: dict) -> Optional[str]:
 def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[list[Member], Member]:
     """Lê config.yaml e devolve (members, chairman).
     Chairman = model.default (o mais bem ranqueado pelo seletor v4).
-    Members  = chairman + N-1 primeiros fallback_providers com chave válida.
+    Members  = chairman + moa.aggregator + moa.reference_models, completando
+               com fallback_providers; dedupe por modelo; só slots com chave.
 
     Se pool_path for dado (JSON gerado por pool.py), usa essa pool verificada
     em vez do config — útil quando slots do config estão em rate limit.
@@ -157,16 +167,37 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
         "base_url": model.get("base_url", ""),
         "api_mode": model.get("api_mode", "chat_completions"),
     }
+    # Ordem de prioridade: MAIN (chairman) → aggregator MoA → reference_models MoA
+    # → fallback_providers (reserva). O seletor v4 escolhe os slots MoA por
+    # qualidade (papel moa) e fabricantes distintos — melhor para opinião cruzada
+    # que os fallbacks (escolhidos por cobertura de falha).
+    moa = cfg.get("moa") or {}
+    preset = ((moa.get("presets") or {}).get(moa.get("default_preset") or "default") or {})
+    aggregator = preset.get("aggregator") or moa.get("aggregator")
+    refs = preset.get("reference_models") or moa.get("reference_models") or []
+    refs = [r for r in refs if r.get("enabled", True)]
     fallbacks = cfg.get("fallback_providers", [])
 
+    candidates = [chairman_entry]
+    if aggregator:
+        candidates.append(aggregator)
+    candidates += refs + fallbacks
+
     members: list[Member] = []
-    for i, entry in enumerate([chairman_entry] + fallbacks):
+    seen: set[str] = set()
+    for entry in candidates:
         if len(members) >= top_n:
             break
+        mid = str(entry.get("model") or "")
+        # dedupe por modelo (ignora :free) — o mesmo modelo em 2 slots não soma opinião
+        key = mid.lower().removesuffix(":free")
+        if not mid or key in seen or entry.get("provider") == "moa":
+            continue
         api_key = _resolve_api_key(entry)
         base_url = entry.get("base_url") or ""
         if not api_key or not base_url:
             continue
+        seen.add(key)
         alias = f"m{len(members)+1}-{entry['model'].split('/')[-1][:20]}"
         members.append(Member(
             name=alias,

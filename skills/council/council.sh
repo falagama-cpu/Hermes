@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # council.sh - Simple wrapper to run Hermes Council skill
-# Assumes this script is located in ~/.hermes/profiles/<profile>/skills/council/
+# Uso: HERMES_HOME=~/.hermes/profiles/<perfil> ./council.sh "pergunta" [--members N]
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
