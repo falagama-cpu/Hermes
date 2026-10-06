@@ -1,7 +1,8 @@
 # Hermes Council — Mixture-of-Agents dinâmico sobre um perfil Hermes
-# Lê $HERMES_HOME/config.yaml a cada execução (HERMES_HOME = diretório do
-# perfil, ex.: ~/.hermes/profiles/<perfil>; padrão ~/.hermes). O seletor
-# free-LLM v4 atualiza model.default, moa.* e fallback_providers.
+# Lê <perfil>/config.yaml a cada execução. Perfil = $HERMES_HOME, ou
+# $COUNCIL_PROFILE (nome) sob o home padrão do Hermes:
+#   Linux/macOS ~/.hermes · Windows %LOCALAPPDATA%\hermes
+# O seletor free-LLM v4 atualiza model.default, moa.* e fallback_providers.
 #
 # Estágios (cópia minimal do llm-council, sem servidor/web):
 #   1. Cada membro responde à query em paralelo
@@ -23,7 +24,22 @@ from typing import Optional
 import httpx
 import yaml
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+def _hermes_root() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _profile_home() -> Path:
+    if os.environ.get("HERMES_HOME", "").strip():
+        return Path(os.path.expandvars(os.path.expanduser(os.environ["HERMES_HOME"])))
+    name = os.environ.get("COUNCIL_PROFILE", "").strip()
+    root = _hermes_root()
+    return root / "profiles" / name if name and name != "default" else root
+
+
+HERMES_HOME = _profile_home()
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 ENV_PATH = HERMES_HOME / ".env"
 STATE_PATH = Path(os.environ.get("COUNCIL_STATE_DIR") or Path(__file__).resolve().parent / "state")
@@ -31,11 +47,11 @@ STATE_PATH.mkdir(parents=True, exist_ok=True)
 
 
 def _load_profile_env():
-    """O perfil guarda chaves em $HERMES_HOME/.env.
+    """O perfil guarda chaves em <perfil>/.env.
     Carrega em os.environ sem sobrescrever valores já definidos."""
     if not ENV_PATH.exists():
         return
-    for line in ENV_PATH.read_text().splitlines():
+    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -62,7 +78,7 @@ def _load_persona(name: str) -> str:
     p = Path(__file__).parent / "personas" / f"{name}.md"
     if not p.exists():
         return ""
-    text = p.read_text()
+    text = p.read_text(encoding="utf-8")
     # remove frontmatter yaml
     if text.startswith("---"):
         end = text.find("---", 3)
@@ -140,7 +156,7 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
     em vez do config — útil quando slots do config estão em rate limit.
     """
     if pool_path and Path(pool_path).exists():
-        pool = json.loads(Path(pool_path).read_text())
+        pool = json.loads(Path(pool_path).read_text(encoding="utf-8"))
         members: list[Member] = []
         for i, entry in enumerate(pool[:top_n]):
             api_key = os.environ.get(entry.get("api_key_env", ""), "")
@@ -159,7 +175,7 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
             raise RuntimeError(f"Pool externa tem menos de 2 membros válidos ({len(members)})")
         return members, members[0]
 
-    cfg = yaml.safe_load(CONFIG_PATH.read_text())
+    cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     model = cfg["model"]
     chairman_entry = {
         "provider": model["provider"],
@@ -447,8 +463,8 @@ async def _amain():
 
     q = " ".join(args.query)
     r = await run_council(q, top_n=args.members, auto_persona=not args.no_ponytail)
-    Path(args.out).write_text(to_json(r))
-    Path(args.md).write_text(to_markdown(r))
+    Path(args.out).write_text(to_json(r), encoding="utf-8")
+    Path(args.md).write_text(to_markdown(r), encoding="utf-8")
     if args.json:
         print(to_json(r))
     else:
@@ -456,6 +472,11 @@ async def _amain():
 
 
 def main():
+    for s in (sys.stdout, sys.stderr):  # Windows: console cp1252
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     asyncio.run(_amain())
 
 

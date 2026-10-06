@@ -99,12 +99,21 @@ except ImportError:
 # PATHS / CONFIG
 # =============================================================================
 
+def _platform_default_home() -> Path:
+    """Home padrão do Hermes por plataforma (igual ao hermes_constants):
+    Windows = %LOCALAPPDATA%\\hermes; Linux/macOS = ~/.hermes."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "hermes"
+    return Path.home() / ".hermes"
+
+
 def _default_home() -> Path:
     # Instalado em <perfil>/scripts/ → o perfil dono é o diretório pai.
     owner = Path(__file__).resolve().parent.parent
     if (owner / "config.yaml").exists():
         return owner
-    return Path.home() / ".hermes"
+    return _platform_default_home()
 
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME") or _default_home())
@@ -127,7 +136,7 @@ NOT_FREE_TTL_S = 7 * 24 * 3600
 
 def _load_not_free() -> Dict[str, Any]:
     try:
-        data = json.loads(NOT_FREE_FILE.read_text())
+        data = json.loads(NOT_FREE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     now = time.time()
@@ -140,7 +149,7 @@ def mark_not_free(model: Optional[Dict[str, Any]], reason: str) -> None:
     data = _load_not_free()
     data[model["_model_id"]] = {"reason": reason, "ts": time.time()}
     NOT_FREE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    NOT_FREE_FILE.write_text(json.dumps(data, indent=2))
+    NOT_FREE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     logging.warning("NÃO-FREE (excluído por 7 dias): %s — %s", model["_model_id"], reason)
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -2801,7 +2810,15 @@ def run(args: argparse.Namespace) -> int:
     warmup_results: List[Dict[str, Any]] = []
     gateway_active: Optional[bool] = None
 
-    if not args.dry_run and not args.no_restart:
+    if not args.dry_run and not args.no_restart and not _can_restart_gateway():
+        # Windows/macOS/sem systemd: o gateway relê config.yaml a cada mensagem;
+        # sem restart só as sessões já abertas mantêm o modelo anterior.
+        logging.info(
+            "Sem systemctl --user (ou HERMES_GATEWAY_RESTART=0): restart pulado; "
+            "o gateway relê config.yaml a cada mensagem. Opcional: hermes gateway restart."
+        )
+        warmup_results = run_warmups(final_main, final_moa, final_fallbacks)
+    elif not args.dry_run and not args.no_restart:
         unit = gateway_unit_name()
         if args.cron_mode:
             # Modo cron: roda DENTRO do gateway. Warm-up ANTES (testa endpoints
@@ -2888,6 +2905,13 @@ def run(args: argparse.Namespace) -> int:
 # =============================================================================
 # P4 — RESTART DO GATEWAY + WARM-UP
 # =============================================================================
+
+def _can_restart_gateway() -> bool:
+    """Restart via systemd só em Linux com systemctl no PATH e sem opt-out."""
+    if os.environ.get("HERMES_GATEWAY_RESTART", "1") == "0":
+        return False
+    return sys.platform.startswith("linux") and shutil.which("systemctl") is not None
+
 
 def gateway_unit_name() -> str:
     """Serviço systemd do gateway que SERVE este perfil.
@@ -3098,6 +3122,13 @@ def probe_ok(model: Optional[Dict[str, Any]]) -> bool:
 # =============================================================================
 
 def main() -> int:
+    # Windows: console cp1252 quebra com acentos/emojis do log.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(
         description=(
             "Seleciona automaticamente LLMs gratuitas de "

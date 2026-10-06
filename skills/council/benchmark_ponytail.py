@@ -4,7 +4,6 @@ Mesmo prompt, mesma pool (3 modelos vivos), mesma query de código.
 Diferença: na run B, um membro recebe persona=ponytail.
 Mede: LOC, tokens, chars, time.
 """
-import asyncio
 import asyncio, json, pathlib, re, time, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import council

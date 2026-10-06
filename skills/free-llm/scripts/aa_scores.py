@@ -95,7 +95,7 @@ def load_entries(cache_file: Path, api_key: Optional[str]) -> Tuple[List[Dict[st
     cached = None
     if cache_file.exists():
         try:
-            cached = json.loads(cache_file.read_text())
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cached = None
     age = time.time() - cached["fetched_at"] if cached else None
@@ -113,7 +113,7 @@ def load_entries(cache_file: Path, api_key: Optional[str]) -> Tuple[List[Dict[st
             return cached["data"], f"cache-velho (API falhou: {exc})"
         return [], f"API da AA falhou: {exc}"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps({"fetched_at": time.time(), "data": data}))
+    cache_file.write_text(json.dumps({"fetched_at": time.time(), "data": data}), encoding="utf-8")
     return data, "api"
 
 

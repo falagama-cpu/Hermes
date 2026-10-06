@@ -32,7 +32,7 @@ def snapshot() -> dict:
     """Lê model.default, moa.aggregator, moa.reference_models e fallbacks do config.yaml."""
     import yaml
 
-    c = yaml.safe_load(CONFIG.read_text()) or {}
+    c = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
     m = c.get("model") or {}
     moa = c.get("moa") or {}
     agg = moa.get("aggregator") or {}
@@ -51,6 +51,12 @@ def diff_line(label: str, a, b) -> str:
 
 
 def main() -> int:
+    # Windows: console cp1252 quebra com emojis do relatório.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     if not SELECTOR.exists():
         print(f"❌ Seletor de modelos FREE: script não encontrado ({SELECTOR})")
         return 1
@@ -62,14 +68,14 @@ def main() -> int:
     try:
         proc = subprocess.run(
             [sys.executable, str(SELECTOR), *args],
-            capture_output=True, text=True, timeout=TIMEOUT,
-            env={**os.environ, "HERMES_HOME": str(HOME)},  # seletor grava no MESMO perfil
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT,
+            env={**os.environ, "HERMES_HOME": str(HOME), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},  # seletor grava no MESMO perfil
         )
         rc, out = proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except subprocess.TimeoutExpired as e:
         rc, out = 124, f"TIMEOUT após {TIMEOUT}s\n{e.stdout or ''}{e.stderr or ''}"
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    LOG.write_text(out)
+    LOG.write_text(out, encoding="utf-8")
     secs = int((datetime.now() - t0).total_seconds())
 
     after = snapshot()
@@ -81,7 +87,7 @@ def main() -> int:
     dry = "--dry-run" in args
     warm = []
     if STATE.exists() and STATE.stat().st_mtime > state_mtime:
-        st = json.loads(STATE.read_text())
+        st = json.loads(STATE.read_text(encoding="utf-8"))
         for w in st.get("warmup", []):
             mark = "✅" if w.get("ok") else "❌"
             warm.append(f"  {mark} {w['label']}: HTTP {w.get('http_status')} "

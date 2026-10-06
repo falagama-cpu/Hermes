@@ -1,16 +1,16 @@
 ---
 name: free-llm
 description: "Use when tuning, installing or publishing the free-LLM selector."
-version: 2.1.0
+version: 2.3.0
 author: falagama-cpu
 license: MIT
-platforms: [linux]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [llm, free-models, cron, artificial-analysis, openrouter, nvidia, cloudflare, nous]
     related_skills: [hermes-agent]
 prerequisites:
-  commands: [hermes, python3]
+  commands: [hermes]
 required_environment_variables:
   - name: ARTIFICIAL_ANALYSIS_API_KEY
     prompt: Artificial Analysis API key (ranking por benchmark)
@@ -22,7 +22,7 @@ required_environment_variables:
     help: https://openrouter.ai/settings/keys
     optional: true
   - name: NVIDIA_API_KEY
-    prompt: NVIDIA NIM API key (nvapi-...)
+    prompt: NVIDIA NIM API key
     help: https://build.nvidia.com → Get API Key
     optional: true
   - name: NOUS_API_KEY
@@ -54,16 +54,18 @@ Um único job de cron escolhe o modelo principal, o agregador MoA e 3 fallbacks 
 
 Ordem obrigatória — o instalador não copia nem agenda nada antes de 1 e 2 passarem:
 
-1. **Dependências**: `hermes` no PATH + perfil existente, `python3` ≥ 3.9, PyYAML (só p/ execução manual; o cron usa o Python do Hermes), `systemctl --user` (opcional: sem ele o gateway não reinicia sozinho), HTTPS de saída para os 5 domínios. Faltando algo obrigatório → aborta com o comando de instalação.
-2. **Chaves**: pede as ausentes com entrada oculta e grava em `<perfil>/.env` (chmod 600). Exige ≥ 1 provedor (OpenRouter/NVIDIA/Nous/Cloudflare); sem nenhum → aborta.
+1. **Dependências**: `hermes` no PATH + perfil existente, Python ≥ 3.9, PyYAML (só p/ execução manual; o cron usa o Python do Hermes), `systemctl --user` (opcional, só Linux: sem ele o gateway não é reiniciado — ele relê `config.yaml` a cada mensagem), HTTPS de saída para os 5 domínios. Faltando algo obrigatório → aborta com o comando de instalação.
+2. **Chaves**: pede as ausentes com entrada oculta (`getpass`) e grava em `<perfil>/.env` (chmod 600 em POSIX). Exige ≥ 1 provedor (OpenRouter/NVIDIA/Nous/Cloudflare); sem nenhum → aborta.
 3. **Instalação**: copia os 3 scripts para `<perfil>/scripts/` e cria **um** job `choose-best-free-llm` (02/08/14/20h, `--no-agent`).
 
+Instalador único em Python (Linux, macOS, Windows) — guia passo a passo em [`INSTALL.md`](../../INSTALL.md):
+
 ```bash
-git clone https://github.com/falagama-cpu/Hermes.git ~/Hermes
-cd ~/Hermes/skills/free-llm/scripts
-bash install_free_model_selection.sh <perfil> --check          # só verifica
-bash install_free_model_selection.sh <perfil> telegram:<chat_id> # instala (perfil "default" = ~/.hermes)
+python3 install.py <perfil> --check           # só verifica   (Windows: py install.py ...)
+python3 install.py <perfil> telegram          # instala; perfil "default" = home do Hermes
 ```
+
+Home do Hermes: Linux/macOS `~/.hermes`, Windows `%LOCALAPPDATA%\hermes`; perfis em `<home>/profiles/<nome>`.
 
 Ao instalar via agente: rode `--check` primeiro e, se faltar dependência ou chave, **avise o usuário e peça antes de prosseguir** — nunca escreva chaves no chat; o usuário as digita no prompt oculto do instalador (ou via captura segura de segredos do Hermes declarada no frontmatter).
 
@@ -73,17 +75,18 @@ Ao instalar via agente: rode `--check` primeiro e, se faltar dependência ou cha
 |---|---|---|
 | `choose-best-free-llm` | 02/08/14/20h | `run_model_selector_v4.py` |
 
-**Nunca deixe outro script gravando `model.default`** (ex.: legados `update-hermes-models`/`update-free-models-14h`): com dois escritores o modelo depende de quem rodou por último e parece "não trocar" — ou ALTERNA a cada poucas horas (sintoma real: v4 gravava kimi-k3 às 02/08/14/20h e o `update_models.py` gravava nemotron-3-super às 09/21h). O v4 é o **único escritor** de MAIN, `moa.aggregator`, `moa.reference_models` e `fallback_providers`; o instalador avisa se encontrar job legado. Diagnóstico: compare `config.yaml` × `state.json` e a origem do último backup em `backups/config/`.
+**Nunca deixe outro script gravando `model.default`** (ex.: scripts antigos de seleção de modelo): com dois escritores o modelo depende de quem rodou por último e parece "não trocar" — ou ALTERNA a cada poucas horas (sintoma: dois jobs gravando modelos diferentes em horários alternados). O v4 é o **único escritor** de MAIN, `moa.aggregator`, `moa.reference_models` e `fallback_providers`; o instalador avisa se encontrar job legado. Diagnóstico: compare `config.yaml` × `state.json` e a origem do último backup em `backups/config/`.
 
-Gateway: em setup multiplex (um `hermes-gateway.service` servindo vários perfis) o seletor reinicia o host; só usa `hermes-gateway-<perfil>.service` se estiver **ativo**. Override: env `HERMES_GATEWAY_UNIT`. Reiniciar unit standalone desabilitado causa loop (exit 75, `Restart=always`).
+Gateway (Linux/systemd): em setup multiplex (um `hermes-gateway.service` servindo vários perfis) o seletor reinicia o host; só usa `hermes-gateway-<perfil>.service` se estiver **ativo**. Override: env `HERMES_GATEWAY_UNIT`; `HERMES_GATEWAY_RESTART=0` desliga o restart. Reiniciar unit standalone desabilitado causa loop (exit 75, `Restart=always`). Windows/macOS: sem restart automático — o gateway relê `config.yaml` a cada mensagem; sessões abertas pegam o modelo novo com `/new`.
 
 ## Arquivos
 
-Scripts (o cron roda a cópia em `~/.hermes/profiles/<perfil>/scripts/`; a da skill é a fonte p/ instalar — mantenha as duas iguais):
+Scripts (o cron roda a cópia em `<perfil>/scripts/`; a da skill é a fonte p/ instalar — mantenha as duas iguais):
 - `hermes-free-model-selector-v4.py` — catálogo → filtro free → score → probe → gravação → warm-up → restart
 - `aa_scores.py` — busca/cache da AA, matching nome↔id, score por papel
 - `run_model_selector_v4.py` — wrapper de cron: roda o seletor em subprocesso e imprime **só o relatório curto**
-- `install_free_model_selection.sh <perfil> [deliver] [--check] [--yes]` — dependências → chaves → scripts + 1 job
+- `install.py <perfil> [deliver] [--check] [--yes]` — dependências → chaves → scripts + 1 job (multiplataforma)
+- `measure_source_overlap.py` — mede o ganho líquido de uma fonte de benchmark sobre o pool free
 
 Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`), `state.json` (última seleção + warm-up), `history.jsonl`, `selector.log`, `last_run.log` (log completo da última execução), `aa_cache.json`, `reliability.json`, `not_free.json`. Backups do config em `<perfil>/backups/config/config.yaml.bak.<ts>`.
 
@@ -117,26 +120,29 @@ Exit ≠ 0 (falha, timeout 1500s, ou `config.yaml` ≠ `state.json`) → o cron 
 ## Comandos
 
 ```bash
+# Linux/macOS
 P=~/.hermes/profiles/<perfil>
-# Simulação (não grava config, não reinicia; mostra a seleção proposta)
-cd $P/scripts && HERMES_HOME=$P python3 run_model_selector_v4.py --dry-run --force --no-restart
-# Execução real fora do cron
-cd $P/scripts && HERMES_HOME=$P python3 run_model_selector_v4.py
-# Histórico / último log
+cd $P/scripts && HERMES_HOME=$P python3 run_model_selector_v4.py --dry-run --force --no-restart   # simulação
+cd $P/scripts && HERMES_HOME=$P python3 run_model_selector_v4.py                                  # execução real
 tail -3 $P/model-selector/history.jsonl; less $P/model-selector/last_run.log
-# Instalar em outro perfil
-bash <skill>/scripts/install_free_model_selection.sh <perfil> telegram:<chat_id>
 ```
-Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde está instalado (fallback `~/.hermes`). Não rode `hermes cron run` de dentro do chat do Telegram: o restart do gateway derruba a conversa.
+
+```powershell
+# Windows (PowerShell)
+$P = "$env:LOCALAPPDATA\hermes\profiles\<perfil>"
+cd "$P\scripts"; $env:HERMES_HOME = $P; py run_model_selector_v4.py --dry-run --force --no-restart
+Get-Content "$P\model-selector\history.jsonl" -Tail 3
+```
+Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde está instalado (fallback: home padrão do Hermes). Não rode `hermes cron run` de dentro de um chat do gateway (Telegram etc.): o restart do gateway derruba a conversa.
 
 ## Workflow de alteração
 
 1. Backup com timestamp do script do **perfil**; edite; `python3 -m py_compile`.
 2. Rode a simulação e leia o relatório + `last_run.log` (`probe ... HTTP <código>`).
-3. Copie os scripts alterados para `<skill>/scripts/` e faça commit/push no repositório da skill (público). Antes do push, rode o gate de sanitização — ver `references/public-publishing.md`.
+3. Copie os scripts alterados para `<skill>/scripts/`. Se publicar a skill num repositório público, rode antes o gate de sanitização — ver `references/public-publishing.md`.
 4. Mudou o instalador? Teste-o em HOME temporário conforme `references/public-publishing.md` antes de publicar.
 5. Sincronize as 3 cópias (repo, skill local, `<perfil>/scripts/` com `.bak-<ts>`) e confira com `diff -rq --exclude __pycache__`.
-6. Confira a próxima execução agendada no Telegram ou em `cron/output/<job-id>/`.
+6. Confira a próxima execução no destino do relatório ou em `<perfil>/cron/output/<job-id>/`.
 
 ## Fontes de score (benchmarks)
 
@@ -154,14 +160,15 @@ eval externa), siga `references/benchmark-sources.md`:
 
 - **"O modelo não troca"**: primeiro confira `history.jsonl` — o v4 é determinístico, mesmo catálogo = mesmo MAIN. Depois confira se outro job grava `model.default`.
 - **AA — índice agentic vem `null` em todos os modelos no tier free**: o código usa o intelligence index no lugar. Endpoint `GET https://artificialanalysis.ai/api/v2/data/llms/models`, header `x-api-key`, ~688 modelos. Cache 24h; API fora → cache até 30 dias. Atribuição à AA é exigida pelos termos.
-- **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura real: ~32-39 de ~56-63 free; sem benchmark: poolside/laguna, longcat-2.5, apodex-mini, dots-3.
-- **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago na conta (kimi-k2.6/k2.7-code, deepseek-v4-pro/flash, glm-5.2/5.3/5.3-flash). O dashboard `dash.cloudflare.com/<acct>/ai/models` lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
+- **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura típica: ~55-65% do pool free tem benchmark AA.
+- **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago para o plano da conta. O dashboard Workers AI lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
 - **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.
 - **Metadados esparsos** (NVIDIA/Cloudflare sem description/contexto): `infer_sparse_metadata` + `MODEL_ID_HINTS`. Com a AA ativa isso pesa só 15%, mas cubra IDs novos para o fallback heurístico.
 - **Confiabilidade**: `reliability.json` por `source::family` — EMA de latência (8s–45s desconta até 25 pts) + falhas (12 pts cada, teto 2); ≥3 falhas seguidas = quarentena.
-- **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo. Restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).
+- **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo. Linux: restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).
 - **Todos os crons falham juntos com `cron external worker exited before ownership acknowledgement`**: regressão de update do Hermes (traceback de import no worker), não dos scripts — `hermes update` de novo.
-- **Gateway standalone `failed` em setup multiplex é ruído**: confirme em `cron/executions.db` antes de culpar o gateway.
+- **Gateway standalone `failed` em setup multiplex é ruído** (Linux): confirme em `cron/executions.db` antes de culpar o gateway.
+- **Windows — acentos/emojis**: os scripts forçam UTF-8 no stdout e em todo I/O de arquivo (`encoding="utf-8"`); o console cp1252 não quebra o relatório.
 - **Valores do `.env` nunca viram constante de módulo**: `load_dotenv()` roda dentro de `run()`, depois do import — `os.environ.get("X", <default fixo>)` no topo do arquivo lê o default, não o `.env`. Guarde template (`.../accounts/{account}/ai/v1`) e formate no uso (`config_entry`).
 - **Default de `HERMES_HOME` = perfil dono do script** (`Path(__file__).resolve().parent.parent`), nunca um nome de perfil fixo; o wrapper repassa `HERMES_HOME` explícito ao subprocesso para seletor e relatório lerem o mesmo perfil.
 
@@ -171,8 +178,6 @@ eval externa), siga `references/benchmark-sources.md`:
 
 ## Referências
 
-- `references/legacy-scripts.md` — `update_models.py`/`update_free_models.py` (pausados), regex YAML, MoA multimodal
 - `references/public-publishing.md` — gate de sanitização do repo público e receita de teste do instalador em HOME limpo
 - `references/benchmark-sources.md` — candidatos a fonte de score (Artificial Analysis, Open LLM Leaderboard, Deepeval): frescor, cobertura medida e veredito
-- `scripts/measure_source_overlap.py` — mede o ganho líquido de uma fonte de benchmark sobre o pool free
 - https://artificialanalysis.ai/data-api/docs · https://openrouter.ai/docs · https://docs.nvidia.com/nim/ · https://developers.cloudflare.com/workers-ai/

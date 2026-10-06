@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# council.sh - Simple wrapper to run Hermes Council skill
-# Uso: HERMES_HOME=~/.hermes/profiles/<perfil> ./council.sh "pergunta" [--members N]
-
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
-
-# Use uv to run the council script with all passed arguments
-uv run python council.py "$@"
+# council.sh — wrapper do Hermes Council (Linux/macOS)
+# Uso: COUNCIL_PROFILE=<perfil> ./council.sh "pergunta" [--members N]
+#      (ou HERMES_HOME=~/.hermes/profiles/<perfil>)
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+exec uv run python council.py "$@"

@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import time
 
 import httpx
@@ -21,7 +22,7 @@ from council import HERMES_HOME, _load_profile_env  # noqa: E402
 _load_profile_env()
 
 SEL = HERMES_HOME / "model-selector"
-POOL_OUT = pathlib.Path("/tmp/pool_vivos.json")
+POOL_OUT = pathlib.Path(tempfile.gettempdir()) / "council_pool_vivos.json"
 
 URLS = {
     "nvidia": ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
@@ -34,8 +35,8 @@ URLS = {
     ),
 }
 
-# modelos que já falharam de forma persistente nesta sessão — não perder tempo
-BLOCKLIST = {"@cf/qwen/qwen3.8-27b"}
+# modelos a ignorar no health check (ex.: COUNCIL_POOL_BLOCKLIST="a/b,c/d")
+BLOCKLIST = {m.strip() for m in os.environ.get("COUNCIL_POOL_BLOCKLIST", "").split(",") if m.strip()}
 
 
 def _extrai_content(msg: dict) -> str | None:
@@ -78,7 +79,7 @@ async def _testa(client: httpx.AsyncClient, source: str, model: str) -> dict:
 
 
 async def main() -> int:
-    rel = json.loads((SEL / "reliability.json").read_text())
+    rel = json.loads((SEL / "reliability.json").read_text(encoding="utf-8"))
     confiaveis = sorted(
         k for k, v in rel.items()
         if v.get("fails", 1) == 0 and v.get("last_ok")
@@ -101,7 +102,7 @@ async def main() -> int:
         info = f"{r['ms']}ms" if r["ok"] else r["erro"]
         print(f"  {marca} {r['source']:12} {r['model']:52} {info}")
 
-    POOL_OUT.write_text(json.dumps(vivos, ensure_ascii=False, indent=1))
+    POOL_OUT.write_text(json.dumps(vivos, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\nPOOL VIVA: {len(vivos)}/{len(alvos)} → {POOL_OUT}")
     return 0
 

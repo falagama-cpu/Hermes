@@ -1,37 +1,69 @@
 ---
 name: council
-description: Mixture-of-Agents (MoA) local para seleção de LLM. Stage 1 (respostas paralelas) → Stage 2 (ranking entre pares) → Stage 3 (chairman sintetiza). Lê config.yaml do perfil Hermes dinamicamente; a cada rodada pega a pool de modelos atualizada pelo cron free-LLM selector.
-version: 1.0.0
+description: "Use when the user wants a cross-model answer (LLM council): members answer in parallel, rank each other anonymously, chairman synthesizes. Reads the Hermes profile config.yaml each run."
+version: 1.1.0
 author: falagama-cpu
 license: MIT
-tags:
-  - multi-model
-  - moa
-  - agente
-  - llm
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [council, moa, multi-model, llm]
+    related_skills: [free-llm]
 ---
 
 # council
 
-Mixture-of-Agents local sobre pool dinâmica de modelos free.
+Conselho de LLMs local sobre os modelos já configurados num perfil do Hermes.
+Três estágios:
+
+1. Cada membro responde à pergunta em paralelo.
+2. Cada membro ranqueia as respostas anonimizadas dos outros.
+3. O chairman sintetiza a resposta final usando os rankings como sinal.
+
+## Quando usar / não usar
+
+- Usar: perguntas com várias interpretações, decisões importantes, verificação cruzada.
+- Não usar: perguntas triviais ou que precisam de resposta imediata (uma rodada leva ~60-90s).
+
+Council × `/moa` do Hermes: o council tem ranking cruzado anônimo antes da síntese (mais
+robusto, mais lento); o `/moa` vai direto references → aggregator (rápido, uso diário).
+
+## Instalação
+
+Requisitos: Python ≥ 3.10 e [`uv`](https://docs.astral.sh/uv/) (ou `pip install httpx pyyaml`).
+Passo a passo para Linux, macOS e Windows em [`INSTALL.md`](../../INSTALL.md).
+
+## Perfil
+
+O council lê `config.yaml` e `.env` do perfil, nesta ordem de prioridade:
+
+1. `HERMES_HOME` — caminho do perfil
+2. `COUNCIL_PROFILE` — nome do perfil sob o home padrão do Hermes
+3. perfil default (`~/.hermes` no Linux/macOS, `%LOCALAPPDATA%\hermes` no Windows)
 
 ## Uso
 
 ```bash
-# HERMES_HOME = diretório do perfil Hermes (padrão ~/.hermes)
-export HERMES_HOME=~/.hermes/profiles/<perfil>
-
-# Via wrapper (recomendado)
+# Linux/macOS
+export COUNCIL_PROFILE=<perfil>
 ./council.sh "sua pergunta aqui" --members 4
-
-# Ou diretamente com uv
-uv run python council.py "sua pergunta aqui" --members 4
+uv run python council.py "sua pergunta" --json        # saída JSON
 
 # Ver os membros atuais sem rodar o council
 uv run python -c "import council;[print(m.name,m.provider) for m in council.load_council_members(4)[0]]"
 ```
 
-## Membros (config.yaml do perfil, relido a cada execução)
+```powershell
+# Windows (PowerShell)
+$env:COUNCIL_PROFILE = "<perfil>"
+.\council.ps1 "sua pergunta aqui" --members 4
+```
+
+Opções: `--members N` (padrão 4, mínimo 2), `--json`, `--no-ponytail`,
+`--out <arquivo.json>`, `--md <arquivo.md>`. Resultado também em `state/last.json` e
+`state/last.md` (sobrescritos a cada execução).
+
+## Membros (relidos do config.yaml a cada execução)
 
 Prioridade:
 
@@ -41,47 +73,47 @@ Prioridade:
 4. `fallback_providers` — só completam se faltar membro
 
 Dedupe por modelo (ignora `:free`); pula slots sem chave/base_url e `provider: moa`.
-Com o seletor free-LLM v4, os slots MoA são escolhidos por qualidade (papel moa,
-intel-pesado) e fabricantes distintos — melhor para opinião cruzada que os fallbacks,
-escolhidos por cobertura de falha. `provider: custom` sem `key_env` resolve a chave pela
-base_url (cloudflare.com → `CLOUDFLARE_API_TOKEN`, nousresearch.com → `NOUS_API_KEY`).
+Com a skill [`free-llm`](../free-llm/SKILL.md) os slots MoA são escolhidos por qualidade e
+fabricantes distintos — melhor para opinião cruzada que os fallbacks, escolhidos por
+cobertura de falha. `provider: custom` sem `key_env` resolve a chave pela base_url
+(cloudflare.com → `CLOUDFLARE_API_TOKEN`, nousresearch.com → `NOUS_API_KEY`).
 
-Council × `/moa` do Hermes: o council tem ranking cruzado anônimo entre os membros antes
-da síntese (mais robusto, ~60-90s); o `/moa` vai direto references → aggregator (rápido).
+Chairman indisponível (ex.: 429) → o primeiro membro que respondeu sintetiza.
 
 ## Estratégias
 
 ### Pool dinâmica (`pool.py`)
-Lê `reliability.json` + `catalog.json` do seletor v4, health-check n modelos, monta pool só com os que respondem. Evita rate limit de slots fixos no config.yaml.
+Lê `model-selector/reliability.json` do seletor free-llm, faz health-check dos modelos
+confiáveis e grava a pool viva em `<tmp>/council_pool_vivos.json`. Útil quando slots do
+config estão em rate limit:
 
-### Persona `ponyetail` (auto ativo em tarefas de código)
-Heuristica `_is_coding_task`:
-- +codigo: `refactor`, `corrige`, `def foo(`, ` ```python`, `traceback`
-- -arquitetura: `arquitetur`, `design`, `planej`, `analis`
-
-Aplica `personas/ponytail.md` (SKILL.md original do repo DietrichGebert/ponytail) como system prompt em 1 membro — nunca chairman.
-
-Forçar/desativar:
-```bash
-uv run python council.py "tarefa" --no-ponytail
+```python
+import asyncio, council
+r = asyncio.run(council.run_council("pergunta", pool_path="<tmp>/council_pool_vivos.json"))
 ```
 
-### Chairman
-`model.default` do config.yaml = chairman. Se falhar, fallback pro primeiro membro que responder.
+### Persona `ponytail` (automática em tarefas de código)
+Heurística `_is_coding_task` (`refactor`, `corrige`, `def foo(`, ` ```python`, `traceback`…;
+`arquitetura`, `design`, `planejamento` contam contra). Aplica `personas/ponytail.md` como
+system prompt em 1 membro — nunca o chairman. Desativar: `--no-ponytail`.
 
-### Variáveis de ambiente
-- `HERMES_HOME` — perfil Hermes (lê `config.yaml` e `.env` dali)
-- `COUNCIL_STATE_DIR` — onde gravar `last.json`/`last.md` (padrão `./state`)
-- `CLOUDFLARE_ACCOUNT_ID` — usado por `pool.py` para montar a URL da Cloudflare
+## Variáveis de ambiente
+
+| Variável | Uso |
+|---|---|
+| `HERMES_HOME` | caminho do perfil Hermes |
+| `COUNCIL_PROFILE` | nome do perfil (alternativa a `HERMES_HOME`) |
+| `COUNCIL_STATE_DIR` | onde gravar `last.json`/`last.md` (padrão `./state`) |
+| `CLOUDFLARE_ACCOUNT_ID` | `pool.py`: monta a URL da Cloudflare (vem do `.env` do perfil) |
+| `COUNCIL_POOL_BLOCKLIST` | `pool.py`: modelos a ignorar, separados por vírgula |
+
+Chaves de API são lidas do `.env` do perfil; o council nunca as grava nem imprime.
 
 ## Arquivos
-- `council.py` — engine core (3 stages)
-- `pool.py` — descoberta de modelos vivos
-- `run_example_final.py` / `run_example_pool.py` — runners específicos
-- `benchmark_ponytail.py` — benchmark antes/depois
-- `personas/ponytail.md` — persona minimalista (YAGNI, stdlib-first)
 
-## Dependências
-```
-httpx pyyaml
-```
+- `council.py` — engine (3 estágios)
+- `pool.py` — health-check e pool de modelos vivos
+- `benchmark_ponytail.py` — compara council com/sem persona ponytail
+- `council.sh` / `council.ps1` — wrappers Linux-macOS / Windows
+- `personas/ponytail.md` — persona minimalista (YAGNI, stdlib-first; MIT, DietrichGebert/ponytail)
+- `pyproject.toml` — dependências (`httpx`, `pyyaml`)
