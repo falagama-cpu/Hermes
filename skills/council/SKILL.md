@@ -1,6 +1,6 @@
 ---
 name: council
-version: 1.2.0
+version: 1.3.0
 author: fabio
 license: MIT
 description: Run local LLM council (MoA) for cross-model answers.
@@ -23,7 +23,7 @@ Consulte um "council" de LLMs quando o usuário pedir opinião cruzada, compara�
 - Situações que precisam de resposta em tempo real
 
 ## Como funciona
-O script `/home/fabio/hermes-council/council.py` lê `~/.hermes/profiles/pesquisa/config.yaml` a cada execução (o seletor v4 roda 02/08/14/20h e é o único escritor de model.default, moa.* e fallback_providers). Membros, em ordem de prioridade:
+O script `<skill_dir>/council.py` lê `<perfil>/config.yaml` a cada execução (o seletor v4 roda 02/08/14/20h e é o único escritor de model.default, moa.* e fallback_providers). Membros, em ordem de prioridade:
 
 1. **Chairman** = `model.default` (MAIN)
 2. `moa.aggregator` (preset default)
@@ -50,7 +50,7 @@ Como o seletor free-llm reavalia o pool a cada 6h, as reservas acompanham sozinh
 vivo e gratuito — o council não mantém lista própria. Ver membros atuais sem rodar o council:
 
 ```bash
-cd /home/fabio/hermes-council && COUNCIL_PROFILE=pesquisa uv run python -c "import council;[print(m.name,m.provider) for m in council.load_council_members(4)[0]]"
+cd <skill_dir> && COUNCIL_PROFILE=<perfil> uv run python -c "import council;[print(m.name,m.provider) for m in council.load_council_members(4)[0]]"
 ```
 
 3 estágios:
@@ -61,10 +61,15 @@ cd /home/fabio/hermes-council && COUNCIL_PROFILE=pesquisa uv run python -c "impo
 ## Uso
 
 ```bash
-cd /home/fabio/hermes-council && COUNCIL_PROFILE=pesquisa uv run python council.py "sua pergunta aqui" --members 4
+cd <skill_dir> && COUNCIL_PROFILE=<perfil> ./council.sh "sua pergunta aqui" --members 4
+# Windows: $env:COUNCIL_PROFILE="<perfil>"; .\council.ps1 "sua pergunta aqui" --members 4
 ```
 
-**Obrigatório `COUNCIL_PROFILE=pesquisa`** (ou `HERMES_HOME=~/.hermes/profiles/pesquisa`): sem isso o council lê o perfil default `~/.hermes` (versão portátil publicada em falagama-cpu/Hermes).
+`<skill_dir>` = pasta desta skill (ex.: `~/.hermes/profiles/<perfil>/skills/council`).
+
+**Obrigatório `COUNCIL_PROFILE=<perfil>`** (ou `HERMES_HOME=~/.hermes/profiles/<perfil>`): sem isso o council lê o perfil default `~/.hermes`.
+
+Requisitos: [`uv`](https://docs.astral.sh/uv/) (instala Python ≥ 3.10, `httpx` e `pyyaml` no 1º uso) e o perfil com o seletor [free-llm](../free-llm/SKILL.md) instalado (ele preenche MAIN/MoA/fallbacks que viram membros).
 
 - `--members N` — quantos modelos no council (default 4; mínimo 2)
 - `--json` — imprime JSON em stdout
@@ -87,10 +92,6 @@ cd /home/fabio/hermes-council && COUNCIL_PROFILE=pesquisa uv run python council.
 - Chairman em cadeia: se o MAIN falhar na síntese, o próximo membro que respondeu no estágio 1 assume (em ordem de prioridade). Se todos falharem, erro.
 - `provider: custom` sem `key_env` resolve a chave pela base_url (cloudflare.com → CLOUDFLARE_API_TOKEN, nousresearch.com → NOUS_API_KEY).
 
-- Rate limits da NVIDIA são frequentes — retries com backoff já embutidos..
-- Sem GPU local: modelos rodam via API (OpenRouter, NVIDIA, custom endpoints)..
-- Chaves carregadas de `~/.hermes/profiles/pesquisa/.env` automaticamente..
-- Chairman em cadeia: se o MAIN falhar na síntese, o próximo membro que respondeu no estágio 1
-  assume (em ordem de prioridade). Se todos falharem, erro.
-- `provider: custom` sem `key_env` resolve a chave pela base_url (cloudflare.com →
-  CLOUDFLARE_API_TOKEN, nousresearch.com → NOUS_API_KEY).
+- Rate limits da NVIDIA são frequentes — retries com backoff já embutidos.
+- Sem GPU local: modelos rodam via API (OpenRouter, NVIDIA, custom endpoints).
+- Chaves carregadas automaticamente de `<perfil>/.env`.

@@ -145,11 +145,34 @@ def _resolve_api_key(entry: dict) -> Optional[str]:
         "openai": ["OPENAI_API_KEY"],
         "anthropic": ["ANTHROPIC_API_KEY"],
         "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "gemini": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
     }.get(provider, [])
     for name in candidates:
         if os.environ.get(name):
             return os.environ[name]
     return None
+
+
+# Providers que não falam /chat/completions com chave (council só usa essa API):
+# openai-codex = login ChatGPT (OAuth + Responses API). Pulados; entra o próximo slot.
+_UNSUPPORTED_PROVIDERS = {"openai-codex"}
+
+
+def _chat_base_url(provider: str, base_url: str) -> str:
+    """base_url usável em <base>/chat/completions. O Hermes grava o Gemini com a
+    base nativa (.../v1beta); a rota OpenAI-compatível fica em .../v1beta/openai."""
+    base = (base_url or "").rstrip("/")
+    if provider in ("gemini", "google") and not base.endswith("/openai"):
+        base = (base or "https://generativelanguage.googleapis.com/v1beta") + "/openai"
+    return base
+
+
+def _skip_unsupported(entry: dict) -> bool:
+    if str(entry.get("provider") or "") in _UNSUPPORTED_PROVIDERS:
+        print(f"[council] pulando {entry.get('model')} ({entry.get('provider')}): "
+              "provider sem API chat/completions por chave", file=sys.stderr)
+        return True
+    return False
 
 
 def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[list[Member], Member]:
@@ -219,11 +242,14 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
             key = mid.lower().removesuffix(":free")
             if not mid or key in seen or entry.get("provider") == "moa":
                 continue
+            if _skip_unsupported(entry):
+                seen.add(key)
+                continue
             pkey = provider_key(entry)
             if pkey in used_providers and not allow_repeat:
                 continue
             api_key = _resolve_api_key(entry)
-            base_url = entry.get("base_url") or ""
+            base_url = _chat_base_url(str(entry.get("provider") or ""), entry.get("base_url") or "")
             if not api_key or not base_url:
                 continue
             seen.add(key)
@@ -254,6 +280,7 @@ _SOURCE_ENDPOINTS = {
     "nous": ("custom", "https://inference-api.nousresearch.com/v1", "NOUS_API_KEY"),
     "cloudflare": ("custom", "https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1",
                    "CLOUDFLARE_API_TOKEN"),
+    "google": ("gemini", "https://generativelanguage.googleapis.com/v1beta", "GOOGLE_API_KEY"),
 }
 # IDs que não são modelos de conversa (parsers, safety etc.)
 _NOT_CHAT = ("parse", "guard", "safety", "embed", "rerank", "translate", "detector")
@@ -332,14 +359,15 @@ def load_reserves(exclude_models: set[str], limit: int = 12) -> list[Member]:
     for e in entries:
         mid = str(e.get("model") or "")
         k = mid.lower().removesuffix(":free")
-        if not mid or k in seen or e.get("provider") == "moa" or any(t in k for t in _NOT_CHAT):
+        if (not mid or k in seen or e.get("provider") == "moa" or any(t in k for t in _NOT_CHAT)
+                or str(e.get("provider") or "") in _UNSUPPORTED_PROVIDERS):
             continue
         api_key = _resolve_api_key(e)
         if not api_key or not e.get("base_url"):
             continue
         seen.add(k)
         out.append(Member(name=f"r-{mid.split('/')[-1][:20]}", provider=e["provider"],
-                          model=mid, base_url=str(e["base_url"]).rstrip("/"),
+                          model=mid, base_url=_chat_base_url(str(e["provider"]), str(e["base_url"])),
                           api_key=api_key, api_mode=e.get("api_mode", "chat_completions")))
         if len(out) >= limit:
             break
