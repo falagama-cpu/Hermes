@@ -5,7 +5,7 @@ Funcionam em **Linux, macOS e Windows**. Guia de instalação completo: [`INSTAL
 
 | Skill | O que faz |
 |---|---|
-| [`free-llm`](skills/free-llm/SKILL.md) | Um job de cron escolhe o modelo principal (MAIN), o MoA (aggregator + reference models) e 3 fallbacks **somente entre modelos gratuitos** de OpenRouter, NVIDIA NIM, Nous Portal e Cloudflare Workers AI, ranqueados pelos benchmarks da [Artificial Analysis](https://artificialanalysis.ai), e grava no `config.yaml` do perfil. |
+| [`free-llm`](skills/free-llm/SKILL.md) | Um job de cron escolhe o modelo principal (MAIN), o MoA (aggregator + reference models) e 3 fallbacks **somente entre modelos gratuitos** de OpenRouter, NVIDIA NIM, Nous Portal, Cloudflare Workers AI e Google AI Studio (Gemini), ranqueados pelos benchmarks da [Artificial Analysis](https://artificialanalysis.ai), e grava no `config.yaml` do perfil. |
 | [`council`](skills/council/SKILL.md) | Conselho de LLMs: os modelos do perfil respondem em paralelo, ranqueiam as respostas uns dos outros de forma anônima e um chairman sintetiza a resposta final. |
 
 ## Instalação rápida

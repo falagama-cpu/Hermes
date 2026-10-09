@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [llm, free-models, cron, artificial-analysis, openrouter, nvidia, cloudflare, nous]
+    tags: [llm, free-models, cron, artificial-analysis, openrouter, nvidia, cloudflare, nous, gemini]
     related_skills: [hermes-agent]
 prerequisites:
   commands: [hermes]
@@ -36,6 +36,10 @@ required_environment_variables:
   - name: CLOUDFLARE_ACCOUNT_ID
     prompt: Cloudflare Account ID
     help: https://dash.cloudflare.com → Workers AI → Account ID
+    optional: true
+  - name: GOOGLE_API_KEY
+    prompt: Google AI Studio API key (Gemini)
+    help: https://aistudio.google.com/apikey
     optional: true
 ---
 
@@ -92,16 +96,16 @@ Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`),
 
 ## Chaves (`<perfil>/.env`)
 
-`ARTIFICIAL_ANALYSIS_API_KEY` (grátis, 1000 req/dia, artificialanalysis.ai → API Access), `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `NOUS_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. Sem a chave da AA o seletor cai na heurística por palavras-chave (cron não quebra; relatório mostra `INATIVO`).
+`ARTIFICIAL_ANALYSIS_API_KEY` (grátis, 1000 req/dia, artificialanalysis.ai → API Access), `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `NOUS_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GOOGLE_API_KEY` (aceita `GEMINI_API_KEY`; valores < 20 caracteres são ignorados como placeholder). Sem a chave da AA o seletor cai na heurística por palavras-chave (cron não quebra; relatório mostra `INATIVO`).
 
 ## Pipeline do v4
 
-1. **Catálogo free** das 4 fontes (`:free`/pricing 0/allowlist NVIDIA/Cloudflare), descarta embed/tts/imagem/vídeo e contexto < 64K. HTTP com backoff+jitter (429/5xx, 4 tentativas).
+1. **Catálogo free** das 5 fontes (`:free`/pricing 0/allowlist NVIDIA/Cloudflare/Gemini da chave free tier), descarta embed/tts/imagem/vídeo e contexto < 64K. HTTP com backoff+jitter (429/5xx, 4 tentativas).
 2. **Exclusões antes do score**: `not_free.json` (recusados por plano, 7 dias) e quarentena de `reliability.json` (≥3 falhas seguidas).
 3. **Anotação AA** (`aa_scores.annotate`) e gravação do `catalog.json`.
 4. **Score por papel** (`score_role`): com benchmark = 0.85×score AA + 0.15×heurística; sem benchmark e AA ativa = heurística − 10; menos penalidade de latência/falhas. Pesos AA: main 40% coding + 35% agentic + 25% intel; moa 60% intel + 20/20; reasoning 80% intel; long_context 50% contexto + 50% intel.
 5. **Seleção** sem repetir família (dedupe cross-provider ignorando `:free`/provider): MAIN, MOA (aggregator), **MOA_REF1..N** (`moa.reference_models`, `HERMES_MOA_REFERENCE_COUNT`=2; papel moa, famílias ≠ MAIN/aggregator, +8 p/ fabricante inédito — podem coincidir com fallbacks, papéis distintos). **1 agente por provider**: aggregator e reference models só saem de providers ainda não usados por MAIN/MOA/refs (chamadas paralelas no mesmo provider estouram rate limit); repete provider só se não houver candidato em outro, F1 coding / F2 reasoning / F3 long-context.
-6. **Probe antes de gravar** (`POST /chat/completions`, 15s): ∉ {200,429} → descarta e re-seleciona. Cloudflare 403 com `code 5035`/"Workers Free plan" → `mark_not_free()`.
+6. **Probe antes de gravar** (`POST /chat/completions`, 15s): ∉ {200,429} → descarta e re-seleciona. Cloudflare 403 com `code 5035`/"Workers Free plan" → `mark_not_free()`. **Google**: probe em `/v1beta/openai/chat/completions` (30s); 429 conta como falha (cota diária), 429 `limit: 0` → `mark_not_free()`; cota gasta não soma rumo à quarentena; warm-up reaproveita o probe da execução (1 req/modelo/execução).
 7. **Gravação**: `model.default/provider/base_url`, `moa.aggregator` + `moa.presets.default.aggregator`, `moa.reference_models` + `moa.presets.default.reference_models` (só se houver refs válidos; senão preserva), `auxiliary.moa_*`, `fallback_providers`. Nous e Cloudflare como `provider: custom` + `key_env` (nunca `custom:nome`). Backup + escrita atômica.
 8. **Warm-up + restart** `--no-block` do gateway (em `--cron-mode` o warm-up vem antes, para não matar o próprio ticker).
 
@@ -161,6 +165,7 @@ eval externa), siga `references/benchmark-sources.md`:
 - **"O modelo não troca"**: primeiro confira `history.jsonl` — o v4 é determinístico, mesmo catálogo = mesmo MAIN. Depois confira se outro job grava `model.default`.
 - **AA — índice agentic vem `null` em todos os modelos no tier free**: o código usa o intelligence index no lugar. Endpoint `GET https://artificialanalysis.ai/api/v2/data/llms/models`, header `x-api-key`, ~688 modelos. Cache 24h; API fora → cache até 30 dias. Atribuição à AA é exigida pelos termos.
 - **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura típica: ~55-65% do pool free tem benchmark AA.
+- **Google/Gemini — free tier minúsculo**: ~20 req/dia **por modelo**. Pode virar MAIN pela nota da AA; a troca em tempo de execução é do próprio Hermes (`agent/error_classifier.py`): 429/402 → fallback imediato + cooldown do primário até o reset informado ("retry in 8h…"); 401/403 → fallback; 404/410/4xx desconhecido → `format_error`/`model_not_found` → fallback. Por isso `fallback_providers` nunca pode ficar vazio. Entrada gravada: `provider: gemini`, `base_url .../v1beta`, `key_env: GOOGLE_API_KEY` (evita o pool rotacionar para um `GEMINI_API_KEY` placeholder). Aliases `-latest` e modelos tts/image/omni/live são descartados.
 - **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago para o plano da conta. O dashboard Workers AI lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
 - **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.
 - **Metadados esparsos** (NVIDIA/Cloudflare sem description/contexto): `infer_sparse_metadata` + `MODEL_ID_HINTS`. Com a AA ativa isso pesa só 15%, mas cubra IDs novos para o fallback heurístico.

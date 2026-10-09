@@ -60,6 +60,7 @@ Todas têm plano gratuito.
 | `NVIDIA_API_KEY` | https://build.nvidia.com → Get API Key |
 | `NOUS_API_KEY` | https://portal.nousresearch.com → API Keys |
 | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | https://dash.cloudflare.com/profile/api-tokens (template "Workers AI") · Account ID no painel Workers AI |
+| `GOOGLE_API_KEY` | https://aistudio.google.com/apikey — Gemini no free tier da chave (~20 req/dia por modelo; o Hermes troca para o fallback no 429) |
 
 Você **não** precisa editar arquivos: o instalador pergunta cada chave ausente com entrada
 oculta e grava no `.env` do perfil (permissão 600 no Linux/macOS). Regras de segurança:
@@ -195,5 +196,6 @@ O `config.yaml` fica com a última seleção; troque o modelo com `hermes -p <pe
 | `nenhuma chave de provedor` | Rode o instalador sem `--yes` e informe ao menos uma chave. |
 | Modelo "não troca" | Confira se outro job grava `model.default`; sessões abertas precisam de `/new`. |
 | Cloudflare 403 `code 5035` | O modelo não está no plano gratuito da conta; o seletor o exclui por 7 dias. |
+| Google 429 `limit: 0` | O Gemini não está no free tier da chave; o seletor o exclui por 7 dias. 429 com limite > 0 = cota diária gasta: fica fora só daquela execução. |
 | Relatório não chega | `deliver` = `local`, ou gateway não configurado (`hermes -p <perfil> gateway setup`). |
 | Acentos estranhos no Windows | Use o Windows Terminal; os scripts já forçam UTF-8. |

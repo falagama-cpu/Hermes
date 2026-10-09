@@ -8,6 +8,7 @@ Fontes monitoradas:
   2. Nous Research / Nous Portal
   3. Cloudflare Workers AI
   4. NVIDIA NIM / NVIDIA API Catalog
+  5. Google AI Studio (Gemini, free tier da chave)
 
 Objetivo:
   MAIN    -> melhor LLM geral para o Hermes
@@ -44,6 +45,7 @@ Credenciais:
   NOUS_API_KEY / NOUS_PORTAL_API_KEY / NOUS_TOKEN
   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
   NVIDIA_API_KEY
+  GOOGLE_API_KEY (ou GEMINI_API_KEY)
 
 Coloque em $HERMES_HOME/.env (perfil: ~/.hermes/profiles/<perfil>/.env).
 
@@ -188,6 +190,7 @@ SOURCE_ORDER = [
     "nous",
     "cloudflare",
     "nvidia",
+    "google",
 ]
 
 SOURCE_BONUS = {
@@ -195,6 +198,7 @@ SOURCE_BONUS = {
     "nous": 2.0,
     "cloudflare": 3.0,
     "nvidia": 3.0,
+    "google": 0.0,
 }
 
 
@@ -1318,6 +1322,82 @@ def fetch_nvidia() -> List[Dict[str, Any]]:
 # UNIÃO DAS FONTES
 # =============================================================================
 
+# =============================================================================
+# GOOGLE AI STUDIO (Gemini, plano gratuito da chave)
+# =============================================================================
+# Não há preço no catálogo: "free" = a chave está no free tier e o modelo responde.
+# Modelo pago para a chave → probe devolve 429 com "limit: 0" → mark_not_free().
+
+GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+GOOGLE_OPENAI_BASE = GOOGLE_API_BASE + "/openai"
+_GOOGLE_SKIP = ("tts", "image", "transcribe", "omni", "nano-banana", "embedding",
+                "customtools", "-live", "robotics", "computer-use", "aqa", "learnlm")
+
+
+def google_key() -> Optional[str]:
+    # Valores curtos (placeholder) não são chave: o .env pode ter GEMINI_API_KEY lixo.
+    for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        value = (os.environ.get(name) or "").strip()
+        if len(value) >= 20:
+            return value
+    return None
+
+
+def google_key_env() -> str:
+    for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        if len((os.environ.get(name) or "").strip()) >= 20:
+            return name
+    return "GOOGLE_API_KEY"
+
+
+def fetch_google() -> List[Dict[str, Any]]:
+    key = google_key()
+    if not key:
+        logging.warning("Google: GOOGLE_API_KEY ausente.")
+        return []
+
+    headers = {
+        "x-goog-api-key": key,
+        "Accept": "application/json",
+        "User-Agent": "Hermes-Free-MultiProvider-Selector/4.0",
+    }
+    raw_models: List[Dict[str, Any]] = []
+    page = ""
+    try:
+        for _ in range(10):
+            url = GOOGLE_API_BASE + "/models?pageSize=200" + (
+                "&pageToken=" + urllib.parse.quote(page) if page else "")
+            payload = http_json(url, headers=headers)
+            raw_models.extend(payload.get("models") or [])
+            page = payload.get("nextPageToken") or ""
+            if not page:
+                break
+    except Exception as exc:
+        logging.warning("Google indisponível: %s", exc)
+        return []
+
+    result = []
+    for raw in raw_models:
+        mid = str(raw.get("name") or "").removeprefix("models/")
+        low = mid.lower()
+        if (not low.startswith("gemini-") or low.endswith("-latest")
+                or any(t in low for t in _GOOGLE_SKIP)
+                or "generateContent" not in (raw.get("supportedGenerationMethods") or [])):
+            continue
+        item = enrich({
+            "id": mid,
+            "name": raw.get("displayName") or mid,
+            "description": raw.get("description") or "",
+            "context_length": raw.get("inputTokenLimit") or 0,
+        }, "google")
+        if base_eligible(item):
+            result.append(item)
+
+    logging.info("Google AI Studio: %d modelos Gemini elegíveis (free tier validado no probe).",
+                 len(result))
+    return result
+
+
 def collect_models() -> List[Dict[str, Any]]:
     models: List[Dict[str, Any]] = []
 
@@ -1326,6 +1406,7 @@ def collect_models() -> List[Dict[str, Any]]:
         fetch_nous,
         fetch_cloudflare,
         fetch_nvidia,
+        fetch_google,
     )
 
     for collector in collectors:
@@ -1460,6 +1541,8 @@ def _free_reason(model: Dict[str, Any]) -> str:
         return "nvidia:allowlist-free-endpoint"
     if source == "cloudflare":
         return "cloudflare:workers-ai-free-tier"
+    if source == "google":
+        return "google:ai-studio-free-tier"
     return "unknown"
 
 
@@ -2023,6 +2106,13 @@ PROVIDER_ENDPOINTS = {
         "base_url": CLOUDFLARE_BASE_URL_TMPL,
         "key_env": "CLOUDFLARE_API_TOKEN",
     },
+    # Provider nativo do Hermes (GeminiNativeClient). key_env fixa a chave válida:
+    # sem ela o pool do Hermes pode rotacionar para um GEMINI_API_KEY placeholder.
+    "google": {
+        "provider": "gemini",
+        "base_url": GOOGLE_API_BASE,
+        "key_env": "GOOGLE_API_KEY",
+    },
 }
 
 
@@ -2058,7 +2148,8 @@ def config_entry(model: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     if endpoint["key_env"]:
-        entry["key_env"] = endpoint["key_env"]
+        entry["key_env"] = (google_key_env() if source == "google"
+                            else endpoint["key_env"])
 
     return entry
 
@@ -3021,7 +3112,14 @@ def _resolve_key(model: Dict[str, Any]) -> Optional[str]:
         return env_first("NOUS_API_KEY", "NOUS_PORTAL_API_KEY", "NOUS_TOKEN")
     if source == "cloudflare":
         return env_first("CLOUDFLARE_API_TOKEN")
+    if source == "google":
+        return google_key()
     return None
+
+
+# Google free tier = ~20 req/dia por modelo: o warm-up reaproveita o probe da
+# mesma execução em vez de gastar outra requisição da cota.
+_PROBE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def warmup_model(
@@ -3048,7 +3146,14 @@ def warmup_model(
         logging.warning("Warm-up %s (%s): sem credencial.", label, entry["model"])
         return result
 
-    url = entry["base_url"].rstrip("/") + "/chat/completions"
+    if model["_source"] == "google" and model["_model_id"] in _PROBE_CACHE:
+        cached = dict(_PROBE_CACHE[model["_model_id"]], label=label, cached=True)
+        logging.info("%s (%s): reaproveita probe (HTTP %s), poupa cota Google.",
+                     label, entry["model"], cached.get("http_status"))
+        return cached
+
+    base = GOOGLE_OPENAI_BASE if model["_source"] == "google" else entry["base_url"]
+    url = base.rstrip("/") + "/chat/completions"
     body = json.dumps({
         "model": entry["model"],
         "messages": [{"role": "user", "content": "ping"}],
@@ -3082,6 +3187,13 @@ def warmup_model(
         # modelo PAGO para esta conta -> exclui do pool de forma persistente.
         if "Workers Free plan" in err_body or '"code":5035' in err_body:
             mark_not_free(model, "cloudflare: indisponível no Workers Free plan")
+        # Google: 429 "limit: 0" = modelo fora do free tier desta chave (pago).
+        # 429 com limite > 0 = cota diária gasta: não seleciona agora, re-testa
+        # na próxima execução (a cota zera todo dia).
+        if model["_source"] == "google" and status == 429:
+            if "limit: 0" in err_body or '"limit": 0' in err_body:
+                mark_not_free(model, "google: fora do free tier (limit 0)")
+            result["quota_exhausted"] = True
     except Exception as exc:
         result.update(
             ok=False, reason=f"erro: {type(exc).__name__}",
@@ -3091,8 +3203,11 @@ def warmup_model(
         return result
 
     latency_ms = round((time.monotonic() - start) * 1000)
-    ok = status in (200, 429)
+    # 429 = no ar, só limitado — exceto Google, onde 429 é cota diária/plano.
+    ok = status == 200 or (status == 429 and model["_source"] != "google")
     result.update(ok=ok, http_status=status, latency_ms=latency_ms)
+    if model["_source"] == "google" and label == "probe":
+        _PROBE_CACHE[model["_model_id"]] = dict(result)
     logging.info(
         "Warm-up %s (%s): HTTP %s em %dms %s",
         label, entry["model"], status, latency_ms, "OK" if ok else "FALHOU",
@@ -3127,9 +3242,12 @@ def probe_ok(model: Optional[Dict[str, Any]]) -> bool:
     quarentenar nas PRÓXIMAS execuções quem vive dando timeout."""
     if not model:
         return False
-    res = warmup_model("probe", model, timeout_s=15)
+    # Google: thinking model + free tier pode passar de 15s.
+    res = warmup_model("probe", model, timeout_s=30 if model["_source"] == "google" else 15)
     ok = bool(res.get("ok"))
-    record_reliability(_REL, model, ok=ok, latency_ms=res.get("latency_ms"))
+    # Cota diária gasta não é falha do modelo: não acumula rumo à quarentena.
+    if not res.get("quota_exhausted"):
+        record_reliability(_REL, model, ok=ok, latency_ms=res.get("latency_ms"))
     return ok
 
 
@@ -3148,7 +3266,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Seleciona automaticamente LLMs gratuitas de "
-            "OpenRouter, Nous, Cloudflare e NVIDIA para Hermes."
+            "OpenRouter, Nous, Cloudflare, NVIDIA e Google para Hermes."
         )
     )
 

@@ -39,8 +39,10 @@ KEYS = [
     ("NOUS_API_KEY", "https://portal.nousresearch.com → API Keys"),
     ("CLOUDFLARE_API_TOKEN", "https://dash.cloudflare.com/profile/api-tokens (template 'Workers AI')"),
     ("CLOUDFLARE_ACCOUNT_ID", "https://dash.cloudflare.com → Workers AI → Account ID"),
+    ("GOOGLE_API_KEY", "https://aistudio.google.com/apikey (Gemini, free tier ~20 req/dia por modelo)"),
 ]
-PROVIDERS = ("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "NOUS_API_KEY", "CLOUDFLARE_API_TOKEN")
+PROVIDERS = ("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "NOUS_API_KEY", "CLOUDFLARE_API_TOKEN",
+             "GOOGLE_API_KEY")
 
 FAIL = False
 
@@ -189,10 +191,10 @@ def main() -> int:
     if not have("ARTIFICIAL_ANALYSIS_API_KEY"):
         warn("sem ARTIFICIAL_ANALYSIS_API_KEY o ranking usa heurística por palavras-chave.")
     if n_prov == 0:
-        print("\nABORTADO: nenhuma chave de provedor (OpenRouter/NVIDIA/Nous/Cloudflare).")
+        print("\nABORTADO: nenhuma chave de provedor (OpenRouter/NVIDIA/Nous/Cloudflare/Google).")
         print("Sem ao menos uma o seletor não encontra modelo algum. Nada foi instalado.")
         return 1
-    ok(f"{n_prov}/4 provedores com chave")
+    ok(f"{n_prov}/{len(PROVIDERS)} provedores com chave")
     if check:
         print("\n--check: pré-requisitos OK. Nada instalado.")
         return 0
