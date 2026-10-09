@@ -177,9 +177,12 @@ def _skip_unsupported(entry: dict) -> bool:
 
 def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[list[Member], Member]:
     """Lê config.yaml e devolve (members, chairman).
-    Chairman = model.default (o mais bem ranqueado pelo seletor v4).
-    Members  = chairman + moa.aggregator + moa.reference_models, completando
-               com fallback_providers; dedupe por modelo; só slots com chave.
+    Chairman = moa.aggregator — o modelo que o seletor free-llm escolheu
+    para o MoA (slot ranqueado por qualidade, família e provider distintos
+    do MAIN). MAIN (model.default) vira membro para opinião cruzada; sem
+    MoA configurado, MAIN assume o lugar de chairman.
+    Members  = chairman + MAIN + moa.reference_models, completando com
+               fallback_providers; dedupe por modelo; só slots com chave.
 
     Se pool_path for dado (JSON gerado por pool.py), usa essa pool verificada
     em vez do config — útil quando slots do config estão em rate limit.
@@ -206,16 +209,12 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
 
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     model = cfg["model"]
-    chairman_entry = {
+    main_entry = {
         "provider": model["provider"],
         "model": model["default"],
         "base_url": model.get("base_url", ""),
         "api_mode": model.get("api_mode", "chat_completions"),
     }
-    # Ordem de prioridade: MAIN (chairman) → aggregator MoA → reference_models MoA
-    # → fallback_providers (reserva). O seletor v4 escolhe os slots MoA por
-    # qualidade (papel moa) e fabricantes distintos — melhor para opinião cruzada
-    # que os fallbacks (escolhidos por cobertura de falha).
     moa = cfg.get("moa") or {}
     preset = ((moa.get("presets") or {}).get(moa.get("default_preset") or "default") or {})
     aggregator = preset.get("aggregator") or moa.get("aggregator")
@@ -223,9 +222,14 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
     refs = [r for r in refs if r.get("enabled", True)]
     fallbacks = cfg.get("fallback_providers", [])
 
-    candidates = [chairman_entry]
+    # Chairman = o modelo que o free-llm escolheu para o MoA (moa.aggregator).
+    # O seletor v4 já ranqueia esse slot por qualidade + fabricante/provider
+    # distintos do MAIN, então é a escolha natural para sintetizar o council.
+    # MAIN vira membro (opinião cruzada). Sem MoA configurado, MAIN assume.
+    candidates: list = []
     if aggregator:
         candidates.append(aggregator)
+    candidates.append(main_entry)
     candidates += refs + fallbacks
 
     # 1 membro por provider: chamadas paralelas no mesmo provider estouram
@@ -268,7 +272,7 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
 
     if len(members) < 2:
         raise RuntimeError(f"Council precisa de >=2 membros com chave; achei {len(members)}")
-    chairman = members[0]  # model.default
+    chairman = members[0]  # moa.aggregator (MAIN se não houver MoA)
     return members, chairman
 
 

@@ -25,8 +25,8 @@ Consulte um "council" de LLMs quando o usuário pedir opinião cruzada, compara�
 ## Como funciona
 O script `<skill_dir>/council.py` lê `<perfil>/config.yaml` a cada execução (o seletor v4 roda 02/08/14/20h e é o único escritor de model.default, moa.* e fallback_providers). Membros, em ordem de prioridade:
 
-1. **Chairman** = `model.default` (MAIN)
-2. `moa.aggregator` (preset default)
+1. **Chairman** = `moa.aggregator` — o modelo que o free-llm escolheu para o MoA
+2. `model.default` (MAIN) — sem MoA configurado, MAIN assume o lugar de chairman
 3. `moa.reference_models` (enabled)
 4. `fallback_providers` — só completam se faltar membro
 
@@ -43,7 +43,7 @@ trocas por posição. Reservas, em ordem:
 
 Nunca usa um provider que já falhou na mesma rodada; entre os demais, prefere o de menor carga
 no council. O estágio 2 só pede ranking a quem respondeu, e o parser aceita JSON ou prosa com
-`Response X`. Chairman: o MAIN se respondeu; senão o próximo membro que respondeu. As trocas
+`Response X`. Chairman: o MoA se respondeu; senão o próximo membro que respondeu. As trocas
 ficam em `state/last.json` (`swaps`) e em `last.md`.
 
 Como o seletor free-llm reavalia o pool a cada 6h, as reservas acompanham sozinhas o que está
@@ -89,7 +89,7 @@ Requisitos: [`uv`](https://docs.astral.sh/uv/) (instala Python ≥ 3.10, `httpx`
 
 ## Notas
 
-- Chairman em cadeia: se o MAIN falhar na síntese, o próximo membro que respondeu no estágio 1 assume (em ordem de prioridade). Se todos falharem, erro.
+- Chairman em cadeia: se o modelo do MoA falhar na síntese, o próximo membro que respondeu no estágio 1 assume (em ordem de prioridade). Se todos falharem, erro.
 - `provider: custom` sem `key_env` resolve a chave pela base_url (cloudflare.com → CLOUDFLARE_API_TOKEN, nousresearch.com → NOUS_API_KEY).
 
 - Rate limits da NVIDIA são frequentes — retries com backoff já embutidos.
