@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,8 @@ HOME = Path(os.environ.get("HERMES_HOME") or HERE.parent)
 CONFIG = HOME / "config.yaml"
 STATE = HOME / "model-selector" / "state.json"
 LOG = HOME / "model-selector" / "last_run.log"
+CATALOG = HOME / "model-selector" / "catalog.json"
+STARTED = time.time()
 TIMEOUT = 1500
 
 
@@ -44,6 +47,44 @@ def snapshot() -> dict:
         "fallbacks": [f"{f.get('model')} ({f.get('provider')})"
                       for f in c.get("fallback_providers") or []],
     }
+
+
+SOURCES = ("openrouter", "nvidia", "nous", "cloudflare", "google", "openai-codex")
+SOURCE_LABEL = {"openai-codex": "openai"}
+
+
+def sources_line(out: str) -> str:
+    """Modelos free por fonte no catálogo desta execução; fonte sem modelo mostra o motivo."""
+    try:
+        by_source = json.loads(CATALOG.read_text()).get("by_source") or {}
+        if CATALOG.stat().st_mtime < STARTED:
+            return ""
+    except (OSError, ValueError):
+        return ""
+    reasons = {
+        "openai-codex": ("cota esgotada até ", "cota do Codex esgotada"),
+        "google": ("sem chave", "Google: GOOGLE_API_KEY ausente"),
+        "nous": ("sem chave", "NOUS_API_KEY ausente"),
+        "cloudflare": ("sem chave", "Cloudflare: CLOUDFLARE_API_TOKEN"),
+    }
+    parts = []
+    for name in SOURCES:
+        n = by_source.get(name, 0)
+        label = SOURCE_LABEL.get(name, name)
+        if n:
+            parts.append(f"{label} {n}")
+            continue
+        why = "0"
+        hint = reasons.get(name)
+        line = next((l for l in out.splitlines() if hint and hint[1] in l), "")
+        if line and name == "openai-codex":
+            why = "0 (" + hint[0] + line.rsplit("até ", 1)[-1].split(" —")[0] + ")"
+        elif line:
+            why = f"0 ({hint[0]})"
+        elif name == "openai-codex" and "OpenAI (login ChatGPT): sem token" in out:
+            why = "0 (sem login)"
+        parts.append(f"{label} {why}")
+    return " · ".join(parts)
 
 
 def diff_line(label: str, a, b) -> str:
@@ -126,6 +167,9 @@ def main() -> int:
         lines.append(diff_line(f"FB{i + 1}", a, b))
     if warm:
         lines += ["Warm-up:", *warm]
+    src = sources_line(out)
+    if src:
+        lines.append(f"Fontes: {src}")
     if aa_line:
         lines.append(f"Ranking: {aa_line}")
     if errors:

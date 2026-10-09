@@ -116,6 +116,7 @@ Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`),
 🤖 Seletor LLM FREE — 🔄 TROCOU modelos | ✅ OK — sem mudança | ❌ FALHOU | 🧪 SIMULAÇÃO (Ns)
 MAIN: antigo → novo   (MOA, FB1..FB3 idem)
 Warm-up: ✅ MAIN: HTTP 200 2204ms ...
+Fontes: openrouter N · nvidia N · nous N · cloudflare N · google N · openai N (ou motivo: sem chave / sem login / cota esgotada até DD/MM)
 Ranking: Artificial Analysis: ATIVO | origem=api|cache|cache-velho | N/M modelos free com benchmark
 Avisos/erros: ...
 ```
