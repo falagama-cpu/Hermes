@@ -939,10 +939,12 @@ def fetch_nous() -> List[Dict[str, Any]]:
         "User-Agent": "Hermes-Free-MultiProvider-Selector/4.0",
     }
 
-    # /models pode ser público em algumas versões, mas usamos credencial
-    # quando disponível para ficar alinhado ao ambiente Hermes.
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
+    # /models é público, mas sem chave os modelos não respondem no probe/runtime:
+    # listá-los só gera seleções que falham ("sem credencial").
+    if not key:
+        logging.warning("Nous: NOUS_API_KEY ausente — fonte ignorada.")
+        return []
+    headers["Authorization"] = f"Bearer {key}"
 
     url = NOUS_BASE_URL.rstrip("/") + "/models"
 
