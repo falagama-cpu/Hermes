@@ -1,6 +1,6 @@
 ---
 name: council
-version: 1.3.0
+version: 1.4.0
 author: fabio
 license: MIT
 description: Run local LLM council (MoA) for cross-model answers.
@@ -77,21 +77,13 @@ Requisitos: [`uv`](https://docs.astral.sh/uv/) (instala Python ≥ 3.10, `httpx`
 - `COUNCIL_MEMBER_TIMEOUT` — segundos por membro nos estágios 1-2 (padrão 120)
 - `COUNCIL_MEMBER_SWAPS` — trocas automáticas por posição (padrão 2)
 
-## Quando usar
-- Perguntas com múltiplas interpretações ou alto valor em precisão
-- "Pergunta ao council" / "o que o council acha"
-- Verificação cruzada antes de decidir algo importante
-
-## Quando NÃO usar
-- Perguntas triviais ou factuais simples (council é caro: ~60-90s por consulta)
-- Tarefas que não exigem opinião de múltiplos modelos
-- Situações que precisam de resposta em tempo real
-
 ## Notas
 
-- Chairman em cadeia: se o modelo do MoA falhar na síntese, o próximo membro que respondeu no estágio 1 assume (em ordem de prioridade). Se todos falharem, erro.
+- Chairman em cadeia: se o modelo do MoA falhar na síntese — ou for trocado no estágio 1 (429/timeout) — o próximo membro que respondeu assume, virando "chairman substituto" em `state/last.json` (`swaps`). Se todos falharem, erro.
+- `provider: gemini`/`google`: o council chama `/chat/completions`, que no Gemini fica em `<base>/openai` — base_url `.../v1beta` é reescrita para `.../v1beta/openai` automaticamente; sem isso dá 404.
+- `provider: openai-codex` é pulado com aviso: login ChatGPT (OAuth) não expõe `/chat/completions` por chave. Quando um GPT virar MAIN, o council usa o próximo slot.
 - `provider: custom` sem `key_env` resolve a chave pela base_url (cloudflare.com → CLOUDFLARE_API_TOKEN, nousresearch.com → NOUS_API_KEY).
-
 - Rate limits da NVIDIA são frequentes — retries com backoff já embutidos.
 - Sem GPU local: modelos rodam via API (OpenRouter, NVIDIA, custom endpoints).
 - Chaves carregadas automaticamente de `<perfil>/.env`.
+- A composição muda a cada 6h: o seletor free-llm reescreve `moa.aggregator`/fallbacks — leia os membros sempre no momento do run (`load_council_members`), nunca de um cache da sessão.
