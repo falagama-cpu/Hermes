@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [llm, free-models, cron, artificial-analysis, openrouter, nvidia, cloudflare, nous, gemini]
+    tags: [llm, free-models, cron, artificial-analysis, openrouter, nvidia, cloudflare, nous, gemini, openai-codex]
     related_skills: [hermes-agent]
 prerequisites:
   commands: [hermes]
@@ -100,7 +100,7 @@ Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`),
 
 ## Pipeline do v4
 
-1. **Catálogo free** das 5 fontes (`:free`/pricing 0/allowlist NVIDIA/Cloudflare/Gemini da chave free tier), descarta embed/tts/imagem/vídeo e contexto < 64K. HTTP com backoff+jitter (429/5xx, 4 tentativas).
+1. **Catálogo free** das 6 fontes (+ OpenAI via login ChatGPT/`openai-codex`) (`:free`/pricing 0/allowlist NVIDIA/Cloudflare/Gemini da chave free tier), descarta embed/tts/imagem/vídeo e contexto < 64K. HTTP com backoff+jitter (429/5xx, 4 tentativas).
 2. **Exclusões antes do score**: `not_free.json` (recusados por plano, 7 dias) e quarentena de `reliability.json` (≥3 falhas seguidas).
 3. **Anotação AA** (`aa_scores.annotate`) e gravação do `catalog.json`.
 4. **Score por papel** (`score_role`): com benchmark = 0.85×score AA + 0.15×heurística; sem benchmark e AA ativa = heurística − 10; menos penalidade de latência/falhas. Pesos AA: main 40% coding + 35% agentic + 25% intel; moa 60% intel + 20/20; reasoning 80% intel; long_context 50% contexto + 50% intel.
@@ -165,6 +165,7 @@ eval externa), siga `references/benchmark-sources.md`:
 - **"O modelo não troca"**: primeiro confira `history.jsonl` — o v4 é determinístico, mesmo catálogo = mesmo MAIN. Depois confira se outro job grava `model.default`.
 - **AA — índice agentic vem `null` em todos os modelos no tier free**: o código usa o intelligence index no lugar. Endpoint `GET https://artificialanalysis.ai/api/v2/data/llms/models`, header `x-api-key`, ~688 modelos. Cache 24h; API fora → cache até 30 dias. Atribuição à AA é exigida pelos termos.
 - **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura típica: ~55-65% do pool free tem benchmark AA.
+- **OpenAI via login ChatGPT (`openai-codex`)**: sem API key — token lido de `$HERMES_HOME/auth.json` **só leitura** (renovar gastaria o refresh_token rotativo e derrubaria o login do Hermes; quem renova é o próprio Hermes ao usar). Catálogo: `GET chatgpt.com/backend-api/codex/models?client_version=99.0.0` (`visibility: list`; free: gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna, 272K). Cota: `GET .../wham/usage` (grátis) — `limit_reached`/`used_percent 100` → fonte fora até `reset_at`. Sem ping de chat (Responses API + cota mensal de 30 dias). A AA casa com a variante `(Max)`, que superestima o plano free; quando a cota volta, o terra tende a virar MAIN, e ao esgotar o Hermes troca para o fallback (429 `usage_limit_reached` com `resets_in_seconds`) e o seletor o remove na execução seguinte. Entrada: `provider: openai-codex`, `base_url .../backend-api/codex`, sem `key_env`.
 - **Google/Gemini — free tier minúsculo**: ~20 req/dia **por modelo**. Pode virar MAIN pela nota da AA; a troca em tempo de execução é do próprio Hermes (`agent/error_classifier.py`): 429/402 → fallback imediato + cooldown do primário até o reset informado ("retry in 8h…"); 401/403 → fallback; 404/410/4xx desconhecido → `format_error`/`model_not_found` → fallback. Por isso `fallback_providers` nunca pode ficar vazio. Entrada gravada: `provider: gemini`, `base_url .../v1beta`, `key_env: GOOGLE_API_KEY` (evita o pool rotacionar para um `GEMINI_API_KEY` placeholder). Aliases `-latest` e modelos tts/image/omni/live são descartados.
 - **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago para o plano da conta. O dashboard Workers AI lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
 - **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.

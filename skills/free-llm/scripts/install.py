@@ -186,15 +186,25 @@ def main() -> int:
             warn(f"{name} pulada")
     have = lambda k: bool(env.get(k) or os.environ.get(k))  # noqa: E731
     n_prov = sum(have(k) for k in PROVIDERS)
+    # OpenAI entra pelo login ChatGPT (OAuth do Hermes), não por chave no .env.
+    try:
+        codex = '"openai-codex"' in (phome / "auth.json").read_text(encoding="utf-8")
+    except OSError:
+        codex = False
+    if codex:
+        ok("openai-codex (login ChatGPT) — fonte OpenAI ativa")
+        n_prov += 1
+    else:
+        warn("OpenAI opcional, sem chave: faça login com  hermes auth add openai-codex")
     if have("CLOUDFLARE_API_TOKEN") and not have("CLOUDFLARE_ACCOUNT_ID"):
         warn("CLOUDFLARE_API_TOKEN sem CLOUDFLARE_ACCOUNT_ID: a fonte Cloudflare será ignorada.")
     if not have("ARTIFICIAL_ANALYSIS_API_KEY"):
         warn("sem ARTIFICIAL_ANALYSIS_API_KEY o ranking usa heurística por palavras-chave.")
     if n_prov == 0:
-        print("\nABORTADO: nenhuma chave de provedor (OpenRouter/NVIDIA/Nous/Cloudflare/Google).")
+        print("\nABORTADO: nenhuma chave de provedor (OpenRouter/NVIDIA/Nous/Cloudflare/Google) nem login openai-codex.")
         print("Sem ao menos uma o seletor não encontra modelo algum. Nada foi instalado.")
         return 1
-    ok(f"{n_prov}/{len(PROVIDERS)} provedores com chave")
+    ok(f"{n_prov}/{len(PROVIDERS) + 1} provedores disponíveis")
     if check:
         print("\n--check: pré-requisitos OK. Nada instalado.")
         return 0

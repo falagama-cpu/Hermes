@@ -191,6 +191,7 @@ SOURCE_ORDER = [
     "cloudflare",
     "nvidia",
     "google",
+    "openai-codex",
 ]
 
 SOURCE_BONUS = {
@@ -199,6 +200,7 @@ SOURCE_BONUS = {
     "cloudflare": 3.0,
     "nvidia": 3.0,
     "google": 0.0,
+    "openai-codex": 0.0,
 }
 
 
@@ -1398,6 +1400,109 @@ def fetch_google() -> List[Dict[str, Any]]:
     return result
 
 
+# =============================================================================
+# OPENAI via login ChatGPT (provider openai-codex do Hermes, OAuth)
+# =============================================================================
+# Sem API key: usa o access_token que o Hermes guarda em $HERMES_HOME/auth.json,
+# SÓ LEITURA — nunca renova (gastar o refresh_token rotativo derrubaria o login
+# do Hermes). Disponibilidade vem de /wham/usage (GET grátis, não consome cota);
+# o plano free do ChatGPT tem cota mensal pequena para o Codex.
+
+CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+_CODEX_STATUS: Dict[str, Any] = {}
+
+
+def _codex_token() -> Optional[Tuple[str, Dict[str, str]]]:
+    """(access_token, headers) do login openai-codex, ou None se ausente/expirado."""
+    import base64
+    try:
+        auth = json.loads((HERMES_HOME / "auth.json").read_text())
+    except (OSError, ValueError):
+        return None
+    tokens = ((auth.get("providers") or {}).get("openai-codex") or {}).get("tokens") or {}
+    candidates = [tokens.get("access_token")]
+    for entry in (auth.get("credential_pool") or {}).get("openai-codex") or []:
+        if isinstance(entry, dict):
+            candidates.append(entry.get("access_token") or entry.get("runtime_api_key"))
+    for token in candidates:
+        if not isinstance(token, str) or token.count(".") < 2:
+            continue
+        try:
+            part = token.split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        except (ValueError, TypeError):
+            continue
+        if claims.get("exp", 0) - time.time() < 300:
+            continue
+        info = claims.get("https://api.openai.com/auth") or {}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "codex-cli",
+            "originator": "codex_cli_rs",
+        }
+        if info.get("chatgpt_account_id"):
+            headers["ChatGPT-Account-ID"] = info["chatgpt_account_id"]
+        _CODEX_STATUS["plan"] = info.get("chatgpt_plan_type") or "?"
+        return token, headers
+    return None
+
+
+def codex_usage_ok(headers: Dict[str, str]) -> bool:
+    """Consulta a cota sem gastar requisição. Grava o estado em _CODEX_STATUS."""
+    try:
+        usage = http_json(CODEX_USAGE_URL, headers=headers, max_retries=1)
+    except Exception as exc:
+        _CODEX_STATUS["error"] = str(exc)[:200]
+        return False
+    rl = usage.get("rate_limit") or {}
+    windows = [w for w in (rl.get("primary_window"), rl.get("secondary_window")) if w]
+    _CODEX_STATUS["used_percent"] = max((w.get("used_percent") or 0 for w in windows), default=0)
+    resets = [w.get("reset_at") for w in windows if (w.get("used_percent") or 0) >= 100]
+    if resets:
+        _CODEX_STATUS["reset_at"] = max(resets)
+    return bool(rl.get("allowed", True)) and not rl.get("limit_reached")
+
+
+def fetch_openai_codex() -> List[Dict[str, Any]]:
+    cred = _codex_token()
+    if not cred:
+        logging.warning("OpenAI (login ChatGPT): sem token válido em auth.json "
+                        "(faça login: hermes auth add openai-codex) — fonte ignorada.")
+        return []
+    _, headers = cred
+    if not codex_usage_ok(headers):
+        reset = _CODEX_STATUS.get("reset_at")
+        when = dt.datetime.fromtimestamp(reset).strftime("%d/%m %H:%M") if reset else "?"
+        logging.warning("OpenAI (login ChatGPT, plano %s): cota do Codex esgotada "
+                        "(%s%%) até %s — fonte ignorada nesta execução.",
+                        _CODEX_STATUS.get("plan"), _CODEX_STATUS.get("used_percent"), when)
+        return []
+    try:
+        payload = http_json(CODEX_BASE_URL + "/models?client_version=99.0.0", headers=headers)
+    except Exception as exc:
+        logging.warning("OpenAI (login ChatGPT): catálogo indisponível: %s", exc)
+        return []
+
+    result = []
+    for raw in payload.get("models") or []:
+        slug = raw.get("slug") or ""
+        if not slug or raw.get("visibility") != "list":
+            continue
+        item = enrich({
+            "id": slug,
+            "name": raw.get("display_name") or slug,
+            "description": raw.get("description") or "",
+            "context_length": raw.get("context_window") or 0,
+        }, "openai-codex")
+        if base_eligible(item):
+            result.append(item)
+    logging.info("OpenAI (login ChatGPT, plano %s, cota usada %s%%): %d modelos elegíveis.",
+                 _CODEX_STATUS.get("plan"), _CODEX_STATUS.get("used_percent"), len(result))
+    return result
+
+
 def collect_models() -> List[Dict[str, Any]]:
     models: List[Dict[str, Any]] = []
 
@@ -1407,6 +1512,7 @@ def collect_models() -> List[Dict[str, Any]]:
         fetch_cloudflare,
         fetch_nvidia,
         fetch_google,
+        fetch_openai_codex,
     )
 
     for collector in collectors:
@@ -1543,6 +1649,8 @@ def _free_reason(model: Dict[str, Any]) -> str:
         return "cloudflare:workers-ai-free-tier"
     if source == "google":
         return "google:ai-studio-free-tier"
+    if source == "openai-codex":
+        return f"openai-codex:chatgpt-{_CODEX_STATUS.get('plan', '?')}-plan"
     return "unknown"
 
 
@@ -2112,6 +2220,12 @@ PROVIDER_ENDPOINTS = {
         "provider": "gemini",
         "base_url": GOOGLE_API_BASE,
         "key_env": "GOOGLE_API_KEY",
+    },
+    # OAuth gerenciado pelo Hermes (auth.json): sem key_env.
+    "openai-codex": {
+        "provider": "openai-codex",
+        "base_url": CODEX_BASE_URL,
+        "key_env": None,
     },
 }
 
@@ -3114,6 +3228,9 @@ def _resolve_key(model: Dict[str, Any]) -> Optional[str]:
         return env_first("CLOUDFLARE_API_TOKEN")
     if source == "google":
         return google_key()
+    if source == "openai-codex":
+        cred = _codex_token()
+        return cred[0] if cred else None
     return None
 
 
@@ -3144,6 +3261,14 @@ def warmup_model(
     if not key:
         result.update(ok=False, reason="sem credencial")
         logging.warning("Warm-up %s (%s): sem credencial.", label, entry["model"])
+        return result
+
+    if model["_source"] == "openai-codex":
+        # Responses API + cota mensal minúscula: não gasta requisição de chat.
+        # A cota foi conferida no /wham/usage durante a coleta do catálogo.
+        result.update(ok=True, http_status=200, latency_ms=None, reason="cota ok via /wham/usage")
+        logging.info("%s (%s): sem ping — cota conferida via /wham/usage (%s%% usada).",
+                     label, entry["model"], _CODEX_STATUS.get("used_percent"))
         return result
 
     if model["_source"] == "google" and model["_model_id"] in _PROBE_CACHE:
