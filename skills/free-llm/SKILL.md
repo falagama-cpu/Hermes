@@ -1,7 +1,7 @@
 ---
 name: free-llm
-description: "Use when tuning, installing or publishing the free-LLM selector."
-version: 2.3.0
+description: "Use when installing, tuning or publishing the free-LLM selector"
+version: 2.5.0
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -51,6 +51,7 @@ required_environment_variables:
 - Ajustar ranking, pesos, provedores ou a lista de modelos gratuitos.
 - Instalar a seleção automática em outro perfil.
 - Investigar 403/404/timeouts de provedores free (Cloudflare, NVIDIA NIM, OpenRouter, Nous).
+- Um turno do gateway morreu com "rate-limited every one of N attempts" ou outro 4xx — siga `references/failure-triage.md` antes de culpar o seletor.
 
 Um único job de cron escolhe o modelo principal, o agregador MoA e 3 fallbacks **somente entre modelos gratuitos** e grava no `config.yaml` do perfil. O ranking usa os benchmarks medidos da Artificial Analysis (AA); a AA nunca adiciona modelos, só ordena os que já passaram no filtro free.
 
@@ -66,7 +67,8 @@ Instalador único em Python (Linux, macOS, Windows) — guia passo a passo em [`
 
 ```bash
 python3 install.py <perfil> --check           # só verifica   (Windows: py install.py ...)
-python3 install.py <perfil> telegram          # instala; perfil "default" = home do Hermes
+python3 install.py <perfil> [deliver]         # instala; perfil "default" = home do Hermes
+# deliver: local (padrão) ou um mensageiro PAREADO no gateway (telegram:<chat_id>...). Sem mensageiro pareado, use local.
 ```
 
 Home do Hermes: Linux/macOS `~/.hermes`, Windows `%LOCALAPPDATA%\hermes`; perfis em `<home>/profiles/<nome>`.
@@ -104,8 +106,8 @@ Estado em `<perfil>/model-selector/`: `catalog.json` (pool free com campo `aa`),
 2. **Exclusões antes do score**: `not_free.json` (recusados por plano, 7 dias) e quarentena de `reliability.json` (≥3 falhas seguidas).
 3. **Anotação AA** (`aa_scores.annotate`) e gravação do `catalog.json`.
 4. **Score por papel** (`score_role`): com benchmark = 0.85×score AA + 0.15×heurística; sem benchmark e AA ativa = heurística − 10; menos penalidade de latência/falhas. Pesos AA: main 40% coding + 35% agentic + 25% intel; moa 60% intel + 20/20; reasoning 80% intel; long_context 50% contexto + 50% intel.
-5. **Seleção** sem repetir família (dedupe cross-provider ignorando `:free`/provider): MAIN, MOA (aggregator), **MOA_REF1..N** (`moa.reference_models`, `HERMES_MOA_REFERENCE_COUNT`=2; papel moa, famílias ≠ MAIN/aggregator, +8 p/ fabricante inédito — podem coincidir com fallbacks, papéis distintos). **1 agente por provider**: aggregator e reference models só saem de providers ainda não usados por MAIN/MOA/refs (chamadas paralelas no mesmo provider estouram rate limit); repete provider só se não houver candidato em outro, F1 coding / F2 reasoning / F3 long-context.
-6. **Probe antes de gravar** (`POST /chat/completions`, 15s): ∉ {200,429} → descarta e re-seleciona. Cloudflare 403 com `code 5035`/"Workers Free plan" → `mark_not_free()`. **Google**: probe em `/v1beta/openai/chat/completions` (30s); 429 conta como falha (cota diária), 429 `limit: 0` → `mark_not_free()`; cota gasta não soma rumo à quarentena; warm-up reaproveita o probe da execução (1 req/modelo/execução).
+5. **Seleção** sem repetir família (dedupe cross-provider ignorando `:free`/provider): MAIN, MOA (aggregator), **MOA_REF1..N** (`moa.reference_models`, `HERMES_MOA_REFERENCE_COUNT`=2; papel moa, famílias ≠ MAIN/aggregator, +8 p/ fabricante inédito — podem coincidir com fallbacks, papéis distintos). **1 agente por provider**: aggregator e reference models só saem de providers ainda não usados por MAIN/MOA/refs (chamadas paralelas no mesmo provider estouram rate limit); repete provider só se não houver candidato em outro, F1 coding / F2 reasoning / F3 long-context. **Fallbacks F1–F3 também evitam repetir provider** (`fallback_score` −25): cotas são por conta (CF neurons, Google req/dia), dois fallbacks do mesmo provider caem juntos quando a cota esgota (foi o que derrubou o turno de 10/10 16:28 com a chain [CF, gemini-3.6, gemini-3.5]); repete só quando não há candidato em outra fonte.
+6. **Probe antes de gravar** (`POST /chat/completions`, 15s): ∉ {200,429} → descarta e re-seleciona. Cloudflare 403 com `code 5035`/"Workers Free plan" → `mark_not_free()`. **Cloudflare 429 `code 4006`** ("daily free allocation of 10,000 neurons") = cota DIÁRIA da CONTA esgotada (não "modelo no ar"): `ok=False` + `quota_exhausted` — descarta na re-seleção, NÃO soma falha no `reliability.json` (re-testa quando a cota zera). **Google**: probe em `/v1beta/openai/chat/completions` (30s); 429 conta como falha (cota diária), 429 `limit: 0` → `mark_not_free()`; cota gasta não soma rumo à quarentena; warm-up reaproveita o probe da execução (1 req/modelo/execução).
 7. **Gravação**: `model.default/provider/base_url`, `moa.aggregator` + `moa.presets.default.aggregator`, `moa.reference_models` + `moa.presets.default.reference_models` (só se houver refs válidos; senão preserva), `auxiliary.moa_*`, `fallback_providers`. Nous e Cloudflare como `provider: custom` + `key_env` (nunca `custom:nome`). Backup + escrita atômica.
 8. **Warm-up + restart** `--no-block` do gateway (em `--cron-mode` o warm-up vem antes, para não matar o próprio ticker).
 
@@ -163,16 +165,19 @@ eval externa), siga `references/benchmark-sources.md`:
 
 ## Armadilhas
 
+- **"Rodou sem as modificações"**: compare o horário da alteração com os arquivos de `<perfil>/cron/output/<job-id>/` (relatórios anteriores à mudança usam o código antigo), confirme a cópia em `<perfil>/scripts/` (grep da função nova) e leia `config.yaml`. Se a mudança não aparece no relatório, torne-a visível nele (ex.: linha `Fontes:`) em vez de só explicar.
 - **"O modelo não troca"**: primeiro confira `history.jsonl` — o v4 é determinístico, mesmo catálogo = mesmo MAIN. Depois confira se outro job grava `model.default`.
+- **F1–F3 podem repetir a mesma fonte**: a regra "1 agente por provider" vale para aggregator/refs MoA; `choose_fallbacks` só dá +5 a fonte inédita e penaliza redundância de capacidades — não proíbe F2 e F3 saírem da MESMA fonte. Cota diária de uma fonte (CF neurons, Google/dia) esgota as duas entradas de uma vez e o turno morre sem tocar fonte viva. Confira `source` de cada fallback em `history.jsonl`/`state.json`; com repetição, fortaleça bônus/penalidade em `fallback_score`/`family_candidates` para alternar fontes entre perfis.
 - **AA — índice agentic vem `null` em todos os modelos no tier free**: o código usa o intelligence index no lugar. Endpoint `GET https://artificialanalysis.ai/api/v2/data/llms/models`, header `x-api-key`, ~688 modelos. Cache 24h; API fora → cache até 30 dias. Atribuição à AA é exigida pelos termos.
 - **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura típica: ~55-65% do pool free tem benchmark AA.
 - **OpenAI via login ChatGPT (`openai-codex`)**: sem API key — token lido de `$HERMES_HOME/auth.json` **só leitura** (renovar gastaria o refresh_token rotativo e derrubaria o login do Hermes; quem renova é o próprio Hermes ao usar). Catálogo: `GET chatgpt.com/backend-api/codex/models?client_version=99.0.0` (`visibility: list`; free: gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna, 272K). Cota: `GET .../wham/usage` (grátis) — `limit_reached`/`used_percent 100` → fonte fora até `reset_at`. Sem ping de chat (Responses API + cota mensal de 30 dias). A AA casa com a variante `(Max)`, que superestima o plano free; quando a cota volta, o terra tende a virar MAIN, e ao esgotar o Hermes troca para o fallback (429 `usage_limit_reached` com `resets_in_seconds`) e o seletor o remove na execução seguinte. Entrada: `provider: openai-codex`, `base_url .../backend-api/codex`, sem `key_env`.
-- **Google/Gemini — free tier minúsculo**: ~20 req/dia **por modelo**. Pode virar MAIN pela nota da AA; a troca em tempo de execução é do próprio Hermes (`agent/error_classifier.py`): 429/402 → fallback imediato + cooldown do primário até o reset informado ("retry in 8h…"); 401/403 → fallback; 404/410/4xx desconhecido → `format_error`/`model_not_found` → fallback. Por isso `fallback_providers` nunca pode ficar vazio. Entrada gravada: `provider: gemini`, `base_url .../v1beta`, `key_env: GOOGLE_API_KEY` (evita o pool rotacionar para um `GEMINI_API_KEY` placeholder). Aliases `-latest` e modelos tts/image/omni/live são descartados.
+- **Google/Gemini — free tier minúsculo**: ~20 req/dia **por modelo**. Pode virar MAIN pela nota da AA; a troca em tempo de execução é do próprio Hermes (`agent/error_classifier.py`; tabela completa e receita de simulação em `references/failure-triage.md`): 429/402 → rotação de credencial/fallback, com `reset_at` quando o corpo informa; 401/403 → auth; 404/410/4xx desconhecido → `format_error`/`model_not_found` — todos com `should_fallback`. Mas `rate_limit` é retryable: sem alternativa viva na chain as 3 tentativas recaem no mesmo provider morto. Por isso `fallback_providers` nunca pode ficar vazio. Entrada gravada: `provider: gemini`, `base_url .../v1beta`, `key_env: GOOGLE_API_KEY` (evita o pool rotacionar para um `GEMINI_API_KEY` placeholder). Aliases `-latest` e modelos tts/image/omni/live são descartados.
 - **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago para o plano da conta. O dashboard Workers AI lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
+- **Cloudflare 429 `code 4006` é cota da CONTA, não do modelo**: "used up your daily free allocation of 10,000 neurons" esgota a alocação diária Workers Free inteira — TODO modelo `@cf/` responde 429 até o reset diário, e o bônus de 429-vivo do probe não distingue. O corpo não carrega padrão de quota/reset, então o Hermes classifica como `rate_limit` genérico e queima as 3 tentativas (backoff 2–5s) na mesma fonte morta; entradas `@cf/` múltiplas na chain caem juntas. Trate 4006 como cota de fonte (análogo ao Google), nunca como rate limit por modelo.
 - **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.
 - **Metadados esparsos** (NVIDIA/Cloudflare sem description/contexto): `infer_sparse_metadata` + `MODEL_ID_HINTS`. Com a AA ativa isso pesa só 15%, mas cubra IDs novos para o fallback heurístico.
 - **Confiabilidade**: `reliability.json` por `source::family` — EMA de latência (8s–45s desconta até 25 pts) + falhas (12 pts cada, teto 2); ≥3 falhas seguidas = quarentena.
-- **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo. Linux: restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).
+- **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo — e o override **persiste entre resets de sessão**, reidratado em cada sessão nova ("Rehydrated persisted /model override" no `gateway.log`) até ser limpo; ele sobrepõe o MAIN do seletor, então um override para modelo pago sem créditos/chave derruba o turno com 402/401 mesmo com o seletor saudável (triagem em `references/failure-triage.md`). Linux: restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).
 - **Todos os crons falham juntos com `cron external worker exited before ownership acknowledgement`**: regressão de update do Hermes (traceback de import no worker), não dos scripts — `hermes update` de novo.
 - **Gateway standalone `failed` em setup multiplex é ruído** (Linux): confirme em `cron/executions.db` antes de culpar o gateway.
 - **Windows — acentos/emojis**: os scripts forçam UTF-8 no stdout e em todo I/O de arquivo (`encoding="utf-8"`); o console cp1252 não quebra o relatório.
@@ -186,5 +191,7 @@ eval externa), siga `references/benchmark-sources.md`:
 ## Referências
 
 - `references/public-publishing.md` — gate de sanitização do repo público e receita de teste do instalador em HOME limpo
+- `references/adding-a-source.md` — triagem de fonte nova (free real × crédito × OAuth), pontos de código, consumidores do config (council), teste
 - `references/benchmark-sources.md` — candidatos a fonte de score (Artificial Analysis, Open LLM Leaderboard, Deepeval): frescor, cobertura medida e veredito
+- `references/failure-triage.md` — triagem de turno morto por 4xx: modelo real do turno (override `/model`), cascata nos logs, tabela de classificação + receita de simulação, cotas diárias por fonte
 - https://artificialanalysis.ai/data-api/docs · https://openrouter.ai/docs · https://docs.nvidia.com/nim/ · https://developers.cloudflare.com/workers-ai/

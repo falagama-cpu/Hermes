@@ -1994,6 +1994,15 @@ def fallback_score(
     # A ideia é preferir capacidades diferentes.
     base -= redundancy * 0.10
 
+    # Diversidade de PROVEDOR na cadeia de fallback: cotas são por conta/chave
+    # (ex.: Cloudflare neurons, Google req/dia), então dois fallbacks do mesmo
+    # provider caem JUNTOS quando a cota do dia esgota — foi o que derrubou o
+    # turno de 10/10 16:28 (chain [CF, gemini-3.6, gemini-3.5]: CF 4006 +
+    # 2 gemini em cooldown = cadeia morta). Penalidade pesada na repetição;
+    # ainda permite quando não há candidato em outra fonte.
+    if any(p["_source"] == model["_source"] for p in selected):
+        base -= 25
+
     return base
 
 
@@ -3314,6 +3323,30 @@ def warmup_model(
         # modelo PAGO para esta conta -> exclui do pool de forma persistente.
         if "Workers Free plan" in err_body or '"code":5035' in err_body:
             mark_not_free(model, "cloudflare: indisponível no Workers Free plan")
+        # Cloudflare: 429 code 4006 "used up your daily free allocation of
+        # 10,000 neurons" = cota DIÁRIA da CONTA esgotada (vale para todos os
+        # modelos @cf). Não é "modelo no ar": o Hermes em runtime faria backoff
+        # inútil no mesmo backend. Trata como quota_exhausted (não conta falha,
+        # não entra em quarentena) para a próxima execução re-testar quando a
+        # cota zerar (reset diário UTC).
+        if model["_source"] == "cloudflare" and status == 429 and (
+            '"code":4006' in err_body.replace(" ", "")
+            or "daily free allocation" in err_body
+        ):
+            # Early return: para CF um 429/4006 NÃO é "modelo no ar" — é a
+            # cota da conta. ok=False descarta o candidato na re-seleção.
+            result.update(
+                ok=False,
+                http_status=status,
+                latency_ms=round((time.monotonic() - start) * 1000),
+                quota_exhausted=True,
+                reason="cloudflare: cota diária de neurons esgotada (code 4006)",
+            )
+            logging.warning(
+                "Warm-up %s (%s): Cloudflare code 4006 — cota diária da conta esgotada.",
+                label, entry["model"],
+            )
+            return result
         # Google: 429 "limit: 0" = modelo fora do free tier desta chave (pago).
         # 429 com limite > 0 = cota diária gasta: não seleciona agora, re-testa
         # na próxima execução (a cota zera todo dia).
@@ -3348,23 +3381,26 @@ def run_warmups(
     fallbacks: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Testa MAIN, MOA, F1..Fn e retorna os resultados para auditoria.
-    Também alimenta o tracker de confiabilidade com latência/falha de cada um."""
+    Também alimenta o tracker de confiabilidade com latência/falha de cada um.
+    quota_exhausted (cota diária: Google 429, Cloudflare 4006) não soma falha."""
     results: List[Dict[str, Any]] = []
     for label, m in [("MAIN", main), ("MOA", moa)]:
         r = warmup_model(label, m)
-        if m:
+        if m and not r.get("quota_exhausted"):
             record_reliability(_REL, m, ok=bool(r.get("ok")), latency_ms=r.get("latency_ms"))
         results.append(r)
     for i, fb in enumerate(fallbacks, start=1):
         r = warmup_model(f"FALLBACK {i}", fb)
-        record_reliability(_REL, fb, ok=bool(r.get("ok")), latency_ms=r.get("latency_ms"))
+        if not r.get("quota_exhausted"):
+            record_reliability(_REL, fb, ok=bool(r.get("ok")), latency_ms=r.get("latency_ms"))
         results.append(r)
     return results
 
 
 def probe_ok(model: Optional[Dict[str, Any]]) -> bool:
     """Probe real do endpoint ANTES de gravar: True se HTTP 200/429.
-    (429 = existe e está no ar, só limitado.) Timeout curto: só interessa se vive.
+    (429 = existe e está no ar, só limitado — EXCETO Cloudflare 4006, cota
+    diária da conta, e Google 429, cota diária da chave; ambos ok=False.)
     Grava latência/falha no tracker de confiabilidade (_REL) para penalizar/
     quarentenar nas PRÓXIMAS execuções quem vive dando timeout."""
     if not model:
