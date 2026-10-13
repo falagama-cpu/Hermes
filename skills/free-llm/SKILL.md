@@ -1,7 +1,7 @@
 ---
 name: free-llm
 description: "Use when installing, tuning or publishing the free-LLM selector"
-version: 2.5.0
+version: 2.5.2
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -132,6 +132,9 @@ P=~/.hermes/profiles/<perfil>
 cd $P/scripts && HERMES_HOME=$P python3 run_model_selector_v4.py --dry-run --force --no-restart   # simulação
 cd $P/scripts && HERMES_HOME=$P python3 run_model_selector_v4.py                                  # execução real
 tail -3 $P/model-selector/history.jsonl; less $P/model-selector/last_run.log
+# python3 do sistema sem PyYAML → use o venv do gateway (o mesmo python do cron):
+#   VP=$(ls ~/.hermes/installs/*/environments/*/venv/bin/python3 | head -1)
+#   cd $P/scripts && HERMES_HOME=$P $VP run_model_selector_v4.py ...
 ```
 
 ```powershell
@@ -145,11 +148,12 @@ Sem `HERMES_HOME` o seletor usa o perfil dono do diretório `scripts/` onde est�
 ## Workflow de alteração
 
 1. Backup com timestamp do script do **perfil**; edite; `python3 -m py_compile`.
-2. Rode a simulação e leia o relatório + `last_run.log` (`probe ... HTTP <código>`).
-3. Copie os scripts alterados para `<skill>/scripts/`. Se publicar a skill num repositório público, rode antes o gate de sanitização — ver `references/public-publishing.md`.
-4. Mudou o instalador? Teste-o em HOME temporário conforme `references/public-publishing.md` antes de publicar.
-5. Sincronize as 3 cópias (repo, skill local, `<perfil>/scripts/` com `.bak-<ts>`) e confira com `diff -rq --exclude __pycache__`.
-6. Confira a próxima execução no destino do relatório ou em `<perfil>/cron/output/<job-id>/`.
+2. **Teste unitário sem rede, antes da simulação** — carregue o seletor com `importlib.util.spec_from_file_location` (`main()` só roda sob `__main__`), monkeypatche `sel.urllib.request.urlopen` e substitua `urllib.error.HTTPError` por subclasse com corpo em `io.BytesIO` (o handler lê `.read(2048)`); redirecione `sel.NOT_FREE_FILE` para um tmpdir para não sujar o estado real. Fake de modelo precisa de `_source`, `_model_id`, `_family`, `_context`, `_caps` (sem `_context`, `best_route_for_family` explode em `KeyError`); para `warmup_model`, também `provider`/`model`/`base_url`/`key_env`. Diferencie cota de falha: 4006 → `ok=False` + `quota_exhausted` sem tocar `_REL`; 5035 → `mark_not_free`.
+3. Rode a simulação e leia o relatório + `last_run.log` (`probe ... HTTP <código>`).
+4. Copie os scripts alterados para `<skill>/scripts/`. Mudou a SKILL.md? Bump `version:` no frontmatter e sincronize a cópia do repo. Se publicar a skill num repositório público, rode antes o gate de sanitização — ver `references/public-publishing.md`.
+5. Mudou o instalador? Teste-o em HOME temporário conforme `references/public-publishing.md` antes de publicar.
+6. Sincronize as 3 cópias (repo, skill local, `<perfil>/scripts/` com `.bak-<ts>`) e confira com `diff -rq --exclude __pycache__` (ou `sha256sum` do arquivo alterado nas 3).
+7. Confira a próxima execução no destino do relatório ou em `<perfil>/cron/output/<job-id>/`.
 
 ## Fontes de score (benchmarks)
 
@@ -167,13 +171,14 @@ eval externa), siga `references/benchmark-sources.md`:
 
 - **"Rodou sem as modificações"**: compare o horário da alteração com os arquivos de `<perfil>/cron/output/<job-id>/` (relatórios anteriores à mudança usam o código antigo), confirme a cópia em `<perfil>/scripts/` (grep da função nova) e leia `config.yaml`. Se a mudança não aparece no relatório, torne-a visível nele (ex.: linha `Fontes:`) em vez de só explicar.
 - **"O modelo não troca"**: primeiro confira `history.jsonl` — o v4 é determinístico, mesmo catálogo = mesmo MAIN. Depois confira se outro job grava `model.default`.
-- **F1–F3 podem repetir a mesma fonte**: a regra "1 agente por provider" vale para aggregator/refs MoA; `choose_fallbacks` só dá +5 a fonte inédita e penaliza redundância de capacidades — não proíbe F2 e F3 saírem da MESMA fonte. Cota diária de uma fonte (CF neurons, Google/dia) esgota as duas entradas de uma vez e o turno morre sem tocar fonte viva. Confira `source` de cada fallback em `history.jsonl`/`state.json`; com repetição, fortaleça bônus/penalidade em `fallback_score`/`family_candidates` para alternar fontes entre perfis.
+- **Config.yaml muda entre duas leituras da mesma sessão**: os jobs de cron do seletor reescrevem `model.default`/`fallback_providers` legitimamente — re-leia o config imediatamente antes de qualquer escrita manual e valide com asserções de estrutura (chaves presentes, contagens, blocos próprios intactos), nunca valores exatos capturados em leitura anterior; asserção velha vira "regressão" fantasma que custa um ciclo de diagnóstico. Para atribuir mudança inesperada, diff contra o backup mais recente em `backups/config/`.
+- **Fallbacks só repetem fonte sem alternativa**: `fallback_score` aplica −25 a candidato cuja fonte já aparece em outro FB (cotas são por conta — CF neurons, Google/dia — então entradas da mesma fonte esgotam juntas e o turno morre sem tocar fonte viva); repete apenas quando nenhuma outra fonte tem candidato. Na triagem, confira `source` de cada FB em `history.jsonl`/`state.json`: repetição aí indica pool free enxuto, não bug de score.
 - **AA — índice agentic vem `null` em todos os modelos no tier free**: o código usa o intelligence index no lugar. Endpoint `GET https://artificialanalysis.ai/api/v2/data/llms/models`, header `x-api-key`, ~688 modelos. Cache 24h; API fora → cache até 30 dias. Atribuição à AA é exigida pelos termos.
 - **Matching AA**: nomes vêm em outra ordem (`Llama 3.3 Instruct 70B` vs `llama-3.3-70b-instruct-fp8-fast`) → além do slug compacto há chave por conjunto de tokens sem ruído (instruct/fp8/fast/reasoning/max/high…) e remoção do prefixo do criador (`nvidia-nemotron-…`). `flash`/`mini`/`lite` **não** são ruído (outros modelos). Várias variantes AA → fica a de maior índice. Cobertura típica: ~55-65% do pool free tem benchmark AA.
 - **OpenAI via login ChatGPT (`openai-codex`)**: sem API key — token lido de `$HERMES_HOME/auth.json` **só leitura** (renovar gastaria o refresh_token rotativo e derrubaria o login do Hermes; quem renova é o próprio Hermes ao usar). Catálogo: `GET chatgpt.com/backend-api/codex/models?client_version=99.0.0` (`visibility: list`; free: gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna, 272K). Cota: `GET .../wham/usage` (grátis) — `limit_reached`/`used_percent 100` → fonte fora até `reset_at`. Sem ping de chat (Responses API + cota mensal de 30 dias). A AA casa com a variante `(Max)`, que superestima o plano free; quando a cota volta, o terra tende a virar MAIN, e ao esgotar o Hermes troca para o fallback (429 `usage_limit_reached` com `resets_in_seconds`) e o seletor o remove na execução seguinte. Entrada: `provider: openai-codex`, `base_url .../backend-api/codex`, sem `key_env`.
 - **Google/Gemini — free tier minúsculo**: ~20 req/dia **por modelo**. Pode virar MAIN pela nota da AA; a troca em tempo de execução é do próprio Hermes (`agent/error_classifier.py`; tabela completa e receita de simulação em `references/failure-triage.md`): 429/402 → rotação de credencial/fallback, com `reset_at` quando o corpo informa; 401/403 → auth; 404/410/4xx desconhecido → `format_error`/`model_not_found` — todos com `should_fallback`. Mas `rate_limit` é retryable: sem alternativa viva na chain as 3 tentativas recaem no mesmo provider morto. Por isso `fallback_providers` nunca pode ficar vazio. Entrada gravada: `provider: gemini`, `base_url .../v1beta`, `key_env: GOOGLE_API_KEY` (evita o pool rotacionar para um `GEMINI_API_KEY` placeholder). Aliases `-latest` e modelos tts/image/omni/live são descartados.
 - **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago para o plano da conta. O dashboard Workers AI lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
-- **Cloudflare 429 `code 4006` é cota da CONTA, não do modelo**: "used up your daily free allocation of 10,000 neurons" esgota a alocação diária Workers Free inteira — TODO modelo `@cf/` responde 429 até o reset diário, e o bônus de 429-vivo do probe não distingue. O corpo não carrega padrão de quota/reset, então o Hermes classifica como `rate_limit` genérico e queima as 3 tentativas (backoff 2–5s) na mesma fonte morta; entradas `@cf/` múltiplas na chain caem juntas. Trate 4006 como cota de fonte (análogo ao Google), nunca como rate limit por modelo.
+- **Cloudflare 429 `code 4006` é cota da CONTA, não do modelo**: "used up your daily free allocation of 10,000 neurons" esgota a alocação diária Workers Free inteira — TODO modelo `@cf/` responde 429 até o reset diário. O seletor trata 4006 como cota (`ok=False` + `quota_exhausted`: descarta na re-seleção, não soma falha no `reliability.json`, re-testa quando zera). O que persiste é o runtime: sem padrão de quota/reset no corpo, o Hermes classifica `rate_limit` genérico e queima as 3 tentativas (backoff 2–5s) na mesma fonte morta até a próxima execução do seletor re-selecionar — a chain diversificada (pipeline §5) limita o dano a uma entrada.
 - **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.
 - **Metadados esparsos** (NVIDIA/Cloudflare sem description/contexto): `infer_sparse_metadata` + `MODEL_ID_HINTS`. Com a AA ativa isso pesa só 15%, mas cubra IDs novos para o fallback heurístico.
 - **Confiabilidade**: `reliability.json` por `source::family` — EMA de latência (8s–45s desconta até 25 pts) + falhas (12 pts cada, teto 2); ≥3 falhas seguidas = quarentena.
