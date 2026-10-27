@@ -1,7 +1,7 @@
 ---
 name: free-llm
 description: "Use when installing, tuning or publishing the free-LLM selector"
-version: 2.5.2
+version: 2.5.3
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -61,7 +61,7 @@ Ordem obrigatória — o instalador não copia nem agenda nada antes de 1 e 2 pa
 
 1. **Dependências**: `hermes` no PATH + perfil existente, Python ≥ 3.9, PyYAML (só p/ execução manual; o cron usa o Python do Hermes), `systemctl --user` (opcional, só Linux: sem ele o gateway não é reiniciado — ele relê `config.yaml` a cada mensagem), HTTPS de saída para os 5 domínios. Faltando algo obrigatório → aborta com o comando de instalação.
 2. **Chaves**: pede as ausentes com entrada oculta (`getpass`) e grava em `<perfil>/.env` (chmod 600 em POSIX). Exige ≥ 1 provedor (OpenRouter/NVIDIA/Nous/Cloudflare); sem nenhum → aborta.
-3. **Instalação**: copia os 3 scripts para `<perfil>/scripts/` e cria **um** job `choose-best-free-llm` (02/08/14/20h, `--no-agent`).
+3. **Instalação**: copia os 4 scripts para `<perfil>/scripts/` e cria **um** job `choose-best-free-llm` (02/08/14/20h, `--no-agent`).
 
 Instalador único em Python (Linux, macOS, Windows) — guia passo a passo em [`INSTALL.md`](../../INSTALL.md):
 
@@ -90,6 +90,7 @@ Gateway (Linux/systemd): em setup multiplex (um `hermes-gateway.service` servind
 Scripts (o cron roda a cópia em `<perfil>/scripts/`; a da skill é a fonte p/ instalar — mantenha as duas iguais):
 - `hermes-free-model-selector-v4.py` — catálogo → filtro free → score → probe → gravação → warm-up → restart
 - `aa_scores.py` — busca/cache da AA, matching nome↔id, score por papel
+- `nvidia_official_free.py` — classificador de gratuidade NVIDIA (C3.9): badge oficial "Free Endpoint" + modalidade + ID confirmado (importado pelo seletor via `sys.path`)
 - `run_model_selector_v4.py` — wrapper de cron: roda o seletor em subprocesso e imprime **só o relatório curto**
 - `install.py <perfil> [deliver] [--check] [--yes]` — dependências → chaves → scripts + 1 job (multiplataforma)
 - `measure_source_overlap.py` — mede o ganho líquido de uma fonte de benchmark sobre o pool free
@@ -180,6 +181,7 @@ eval externa), siga `references/benchmark-sources.md`:
 - **Cloudflare 403 não é token**: `code 5035 "not available on the Workers Free plan"` = modelo pago para o plano da conta. O dashboard Workers AI lista-os sem indicar plano — só o probe revela. 5016/5018 = acesso restrito/formulário; 5006 = só aceita imagem.
 - **Cloudflare 429 `code 4006` é cota da CONTA, não do modelo**: "used up your daily free allocation of 10,000 neurons" esgota a alocação diária Workers Free inteira — TODO modelo `@cf/` responde 429 até o reset diário. O seletor trata 4006 como cota (`ok=False` + `quota_exhausted`: descarta na re-seleção, não soma falha no `reliability.json`, re-testa quando zera). O que persiste é o runtime: sem padrão de quota/reset no corpo, o Hermes classifica `rate_limit` genérico e queima as 3 tentativas (backoff 2–5s) na mesma fonte morta até a próxima execução do seletor re-selecionar — a chain diversificada (pipeline §5) limita o dano a uma entrada.
 - **NVIDIA sem allowlist (descoberta dinâmica, padrão)**: `/models` lista ~80 IDs sem preço; `nvidia_discover_free()` sonda TODOS (10 threads, ~25s) e só entra quem responde 200/429 — ~55 dão 404 (não-free). Cache em `model-selector/nvidia_free_probe.json` (OK 24h, 4xx 7d). Timeout/5xx mantém o modelo se teve OK < 7d ou está na seed `DEFAULT_NVIDIA_FREE_MODELS` (a seed agora é só rede de segurança). `NVIDIA_FREE_MODELS` no env = allowlist rígida; `HERMES_NVIDIA_DISCOVERY=0` = modo antigo. OpenRouter/Nous (pricing 0) e Cloudflare (`/ai/models/search`) já eram dinâmicos.
+- **NVIDIA — badge oficial indisponível não pode esvaziar o pool**: `_get_official_free_ids()` devolve `None` (não `set()` vazio) quando o badge não pôde ser validado — módulo ausente, rede ou catálogo fora do ar. O seletor então mantém o allowlist do probe. `set()` vazio é reservado ao veredito DEFINITIVO do catálogo (nenhum modelo conversacional com Free Endpoint). Cache de 24h em `model-selector/nvidia_official_catalog.json` permite operar com o catálogo fora do ar. Teste: falha de rede → `None` (pool preservado); cache válido → 16 IDs; badge OK → 16 IDs.
 - **Metadados esparsos** (NVIDIA/Cloudflare sem description/contexto): `infer_sparse_metadata` + `MODEL_ID_HINTS`. Com a AA ativa isso pesa só 15%, mas cubra IDs novos para o fallback heurístico.
 - **Confiabilidade**: `reliability.json` por `source::family` — EMA de latência (8s–45s desconta até 25 pts) + falhas (12 pts cada, teto 2); ≥3 falhas seguidas = quarentena.
 - **Gateway**: o host relê `config.yaml` a cada mensagem; sessão com `/model` fixado mantém o modelo antigo — e o override **persiste entre resets de sessão**, reidratado em cada sessão nova ("Rehydrated persisted /model override" no `gateway.log`) até ser limpo; ele sobrepõe o MAIN do seletor, então um override para modelo pago sem créditos/chave derruba o turno com 402/401 mesmo com o seletor saudável (triagem em `references/failure-triage.md`). Linux: restart sempre `systemctl --user --no-block` (sem `--no-block` estoura timeout e o cron marca falha).

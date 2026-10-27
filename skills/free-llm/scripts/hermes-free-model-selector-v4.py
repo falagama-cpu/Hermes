@@ -62,6 +62,7 @@ Dependência:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import datetime as dt
 import json
@@ -70,6 +71,7 @@ import os
 import random
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1244,6 +1246,123 @@ def nvidia_discover_free(raw_models: List[Dict[str, Any]], key: str) -> Set[str]
     return free
 
 
+# =============================================================================
+# NVIDIA NIM — CLASSIFICADOR DE GRATUIDADE BASEADO NO CATÁLOGO OFICIAL (C3.9)
+# =============================================================================
+# REGRA C3.9: a gratuidade NVIDIA vem EXCLUSIVAMENTE do badge oficial
+# "Free Endpoint" em build.nvidia.com/models. HTTP 200/429 no probe é sinal
+# de DISPONIBILIDADE, nunca de preço. Um modelo só entra no pool se:
+#   (a) tem badge oficial "Free Endpoint"  -> fonte autoritativa de gratuidade
+#   (b) é conversacional (text_chat)        -> embeddings/rerank/parse fora
+#   (c) tem ID técnico confirmado no /models-> nunca inventar identificador
+# A disponibilidade continua sendo medida pelo probe, separadamente.
+#
+# O módulo C3.9 (nvidia_official_free.py) é standalone: sem rede no import,
+# sem side-effects. Este wrapper só busca o HTML do catálogo, cacheia por
+# 24h e cruza com o /models da API.
+#
+# Fallback: se o catálogo oficial estiver inacessível, mantemos o allowlist
+# anterior em vez de esvaziar o pool — perder modelos bons é pior do que
+# manter um modelo sem badge por mais um ciclo (o badge é revalidado 1x/dia).
+NVIDIA_OFFICIAL_CATALOG_URL = "https://build.nvidia.com/models?pageSize=500"
+NVIDIA_OFFICIAL_CATALOG_TTL_S = 24 * 3600
+NVIDIA_OFFICIAL_CATALOG_FILE = STATE_DIR / "nvidia_official_catalog.json"
+NVIDIA_OFFICIAL_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _fetch_official_catalog_html() -> str:
+    """Baixa o HTML do catálogo oficial NVIDIA (build.nvidia.com/models)."""
+    req = urllib.request.Request(
+        NVIDIA_OFFICIAL_CATALOG_URL,
+        headers={
+            "User-Agent": NVIDIA_OFFICIAL_UA,
+            "Accept": "text/html,application/xhtml+xml",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=40) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _get_official_free_ids(raw_models: List[Dict[str, Any]]) -> Optional[Set[str]]:
+    """IDs normalizados com badge oficial 'Free Endpoint' + chat + ID confirmado.
+
+    Retorna o conjunto de IDs normalizados (mesmo normalize() do seletor) que
+    o catálogo oficial NVIDIA declara como Free Endpoint conversacional E que
+    foram confirmados no /models da API.
+
+    Convenção de retorno (C3.9 — nunca inventar, nunca rebaixar por falha):
+      - Set[str]  -> veredito DEFINITIVO do catálogo oficial (pode ser vazio)
+      - None      -> badge NÃO pôde ser validado (módulo ausente, rede ou
+                     catálogo indisponível). O chamador mantém o allowlist
+                     anterior em vez de esvaziar o pool: uma falha de
+                     verificação não é prova de que o modelo deixou de ser
+                     gratuito, e perder o MAIN por indisponibilidade do
+                     catálogo seria pior que manter um modelo sem badge por
+                     mais um ciclo (o badge é revalidado 1x/dia).
+    """
+    try:
+        import nvidia_official_free as nvf
+    except ImportError:
+        logging.warning(
+            "NVIDIA: módulo nvidia_official_free.py ausente — badge oficial "
+            "não validado neste ciclo (allowlist mantida por probe)."
+        )
+        return None
+
+    api_ids = [model_id(r) for r in raw_models if model_id(r)]
+
+    cards = None
+    try:
+        cache = json.loads(NVIDIA_OFFICIAL_CATALOG_FILE.read_text(encoding="utf-8"))
+        age = time.time() - float(cache.get("fetched_at") or 0)
+        if age < NVIDIA_OFFICIAL_CATALOG_TTL_S:
+            cards = cache.get("cards")
+            logging.info(
+                "NVIDIA: catálogo oficial do cache (%.1fh, %d cards Free).",
+                age / 3600.0, len(cards or []),
+            )
+    except (OSError, ValueError):
+        cache = {}
+
+    if not cards:
+        try:
+            html = _fetch_official_catalog_html()
+            cards = nvf.parse_official_catalog(html)
+            if not cards:
+                raise RuntimeError("catálogo oficial sem cards 'Free Endpoint'")
+            try:
+                STATE_DIR.mkdir(parents=True, exist_ok=True)
+                NVIDIA_OFFICIAL_CATALOG_FILE.write_text(json.dumps({
+                    "fetched_at": time.time(),
+                    "cards": cards,
+                }, indent=1), encoding="utf-8")
+            except OSError:
+                pass
+            logging.info(
+                "NVIDIA: catálogo oficial baixado — %d cards 'Free Endpoint'.",
+                len(cards),
+            )
+        except Exception as exc:
+            logging.warning(
+                "NVIDIA: catálogo oficial indisponível (%s) — badge não "
+                "revalidado neste ciclo; allowlist mantida por probe.",
+                exc,
+            )
+            return None
+
+    entries = nvf.build_entries(cards, api_ids, md_pages=None, probe_status=None)
+    official = {normalize(x) for x in nvf.eligible_ids(entries)}
+    logging.info(
+        "NVIDIA: badge oficial '%s' -> %d IDs elegíveis (de %d cards Free).",
+        "Free Endpoint", len(official), len(cards),
+    )
+    return official
+
+
 def fetch_nvidia() -> List[Dict[str, Any]]:
     key = env_first("NVIDIA_API_KEY")
 
@@ -1287,7 +1406,24 @@ def fetch_nvidia() -> List[Dict[str, Any]]:
     )
 
     if discovery:
-        allowlist = nvidia_discover_free(raw_models, key)
+        # C3.9 — gratuidade vem do badge oficial "Free Endpoint" do catálogo
+        # NVIDIA; o probe mede DISPONIBILIDADE. Interseção: o modelo entra
+        # apenas se (a) tem badge Free Endpoint oficial E (b) responde ao
+        # probe. Resolve o bug em que HTTP 200 isolado adicionava modelos
+        # sem gratuidade comprovada (ex.: nvidia/nemotron-parse-2.0, que só
+        # tem badge "Downloadable").
+        allowed_by_probe = nvidia_discover_free(raw_models, key)
+        allowed_by_badge = _get_official_free_ids(raw_models)
+        if allowed_by_badge is None:
+            # Badge não validado neste ciclo (rede/módulo): mantém o probe.
+            # Falha de verificação não prova que o modelo deixou de ser free.
+            allowlist = allowed_by_probe
+        else:
+            allowlist = allowed_by_probe & allowed_by_badge
+            logging.info(
+                "NVIDIA: interseção probe (%d) ∩ badge oficial (%d) = %d.",
+                len(allowed_by_probe), len(allowed_by_badge), len(allowlist),
+            )
     else:
         allowlist = configured_allowlist or {
             normalize(x)
@@ -1569,8 +1705,9 @@ def load_reliability() -> Dict[str, Any]:
 def save_reliability(rel: Dict[str, Any]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        RELIABILITY_FILE.write_text(
-            json.dumps(rel, ensure_ascii=False, indent=2), encoding="utf-8"
+        _atomic_write_text(
+            RELIABILITY_FILE,
+            json.dumps(rel, ensure_ascii=False, indent=2),
         )
     except OSError:
         pass
@@ -2379,6 +2516,111 @@ def apply_config(
     return config
 
 
+def _new_file_mode() -> Optional[int]:
+    """Permission bits a NEW file must get: what ``open(path, "w")`` would produce.
+
+    ``tempfile.mkstemp`` always creates at 0600, so publishing a fresh state file through a
+    temp file would silently tighten it to owner-only — these state files are shared state
+    (0664 under umask 002 here), not secrets. POSIX only: Windows mode bits are synthetic
+    and there ``os.chmod`` only toggles the read-only flag.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        mask = os.umask(0o077)
+    except OSError:
+        return 0o644
+    try:
+        os.umask(mask)
+    except OSError:
+        pass
+    return 0o666 & ~mask
+
+
+def _existing_file_mode(path: Path) -> Optional[int]:
+    """Permission bits of *path* when it exists, else ``None``."""
+    try:
+        return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    except OSError:
+        return None
+
+
+def _publish_target(path: Path) -> Path:
+    """The real file a write must land on.
+
+    A symlinked destination is resolved, so the atomic rename replaces the REAL file and the
+    symlink survives: the destination keeps the semantics of the previous ``Path.write_text()``
+    (which followed the link) without the partial-write window. The temp file is staged in the
+    resolved file's own directory, so the rename stays inside one filesystem (no EXDEV).
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
+def _replace_atomic(tmp_name: str, target: Path) -> None:
+    """``os.replace`` with a bounded retry for Windows contention.
+
+    On Windows a rename onto a file another process still holds open fails with winerror
+    5/32/33 (PermissionError); POSIX ``os.replace`` has no such case. After the retries the
+    OSError propagates — it is never swallowed.
+    """
+    attempts = 5 if os.name == "nt" else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp_name, str(target))
+            return
+        except PermissionError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Write *content* to *path* atomically (temp file + fsync + rename).
+
+    The destination is never left partially written: the payload lands in a temp file in the
+    destination's own directory, is flushed and fsync'd, and only then replaces the target
+    with a single rename. The temp file is removed on any failure (including KeyboardInterrupt)
+    and the original error is never masked by that cleanup.
+
+    Permissions: an existing file keeps its own bits; a new file gets what
+    ``open(path, "w")`` would have given it (0o666 & ~umask) — never an indiscriminate 0600.
+    Symlinks are resolved first (see :func:`_publish_target`), so the link survives and the
+    real file is replaced — the same destination the previous ``Path.write_text()`` reached.
+    """
+    dest = Path(path)
+    real = _publish_target(dest)
+    mode = _existing_file_mode(real)
+    if mode is None:
+        mode = _new_file_mode()
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{real.name}.",
+        suffix=".tmp",
+        dir=str(real.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            if mode is not None and hasattr(os, "fchmod"):
+                # Apply the final bits BEFORE the rename, so the published file never
+                # transits through mkstemp's 0600. Windows has no fchmod — the os.chmod
+                # after the replace is the only path there.
+                os.fchmod(handle.fileno(), mode)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_atomic(tmp_name, real)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+
+    if mode is not None:
+        with contextlib.suppress(OSError):
+            os.chmod(real, mode)
+
+
 def atomic_write_yaml(
     path: Path,
     data: Dict[str, Any],
@@ -2556,13 +2798,13 @@ def save_state(state: Dict[str, Any]) -> None:
         exist_ok=True,
     )
 
-    STATE_FILE.write_text(
+    _atomic_write_text(
+        STATE_FILE,
         json.dumps(
             state,
             ensure_ascii=False,
             indent=2,
         ),
-        encoding="utf-8",
     )
 
 
@@ -3363,8 +3605,17 @@ def warmup_model(
         return result
 
     latency_ms = round((time.monotonic() - start) * 1000)
-    # 429 = no ar, só limitado — exceto Google, onde 429 é cota diária/plano.
-    ok = status == 200 or (status == 429 and model["_source"] != "google")
+    # HTTP 429 NÃO é prova de disponibilidade. Após os branches de cota terem
+    # retornado (CF 4006) ou marcado quota_exhausted (Google limit:0), qualquer
+    # outro 429 é capacidade upstream / rate-limit real: conta como FALHA para a
+    # quarentena (não como "existe, só limitado"). Só mantemos ok=True para 429 já
+    # classificado como quota_exhausted, que não soma falha em reliability.json.
+    is_quota_429 = bool(result.get("quota_exhausted"))
+    if status == 429 and not is_quota_429:
+        result["upstream_rate_limit"] = True
+        ok = False
+    else:
+        ok = status == 200 or (status == 429 and is_quota_429)
     result.update(ok=ok, http_status=status, latency_ms=latency_ms)
     if model["_source"] == "google" and label == "probe":
         _PROBE_CACHE[model["_model_id"]] = dict(result)
@@ -3398,11 +3649,11 @@ def run_warmups(
 
 
 def probe_ok(model: Optional[Dict[str, Any]]) -> bool:
-    """Probe real do endpoint ANTES de gravar: True se HTTP 200/429.
-    (429 = existe e está no ar, só limitado — EXCETO Cloudflare 4006, cota
-    diária da conta, e Google 429, cota diária da chave; ambos ok=False.)
-    Grava latência/falha no tracker de confiabilidade (_REL) para penalizar/
-    quarentenar nas PRÓXIMAS execuções quem vive dando timeout."""
+    """Probe real do endpoint ANTES de gravar: True se HTTP 200. Um 429 NÃO é
+    mais considerado ok de seleção: após os branches de cota (CF 4006, Google
+    limit:0), qualquer outro 429 é capacidade upstream/rate-limit real e conta
+    como FALHA (ok=False) → penaliza/quarentena via record_reliability. Só o
+    429 classificado como quota_exhausted não acumula falha."""
     if not model:
         return False
     # Google: thinking model + free tier pode passar de 15s.

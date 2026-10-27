@@ -428,6 +428,12 @@ async def _chat(client: httpx.AsyncClient, m: Member, messages: list[dict],
             return text
         except (httpx.HTTPStatusError, httpx.TransportError) as e:
             last_err = e
+            # 429 = capacidade/rate-limit da conta: a estratégia de council já
+            # troca por um reserva de outro provider (pick_reserve exclui
+            # failed_providers). Não retry no membro morto — deixa stage_one
+            # swapar de imediato em vez de dormir 5s+10s no mesmo provider.
+            if isinstance(e, httpx.HTTPStatusError) and getattr(e.response, "status_code", None) == 429:
+                raise
             if attempt < retries - 1:
                 await asyncio.sleep(5 * (attempt + 1))
     raise last_err
