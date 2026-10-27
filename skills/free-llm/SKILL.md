@@ -1,7 +1,7 @@
 ---
 name: free-llm
 description: "Use when installing, tuning or publishing the free-LLM selector"
-version: 2.5.3
+version: 2.5.4
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -61,7 +61,7 @@ Ordem obrigatória — o instalador não copia nem agenda nada antes de 1 e 2 pa
 
 1. **Dependências**: `hermes` no PATH + perfil existente, Python ≥ 3.9, PyYAML (só p/ execução manual; o cron usa o Python do Hermes), `systemctl --user` (opcional, só Linux: sem ele o gateway não é reiniciado — ele relê `config.yaml` a cada mensagem), HTTPS de saída para os 5 domínios. Faltando algo obrigatório → aborta com o comando de instalação.
 2. **Chaves**: pede as ausentes com entrada oculta (`getpass`) e grava em `<perfil>/.env` (chmod 600 em POSIX). Exige ≥ 1 provedor (OpenRouter/NVIDIA/Nous/Cloudflare); sem nenhum → aborta.
-3. **Instalação**: copia os 4 scripts para `<perfil>/scripts/` e cria **um** job `choose-best-free-llm` (02/08/14/20h, `--no-agent`).
+3. **Instalação**: copia os 4 scripts para `<perfil>/scripts/` e cria **um** job `choose-best-free-llm` (02/08/14h, `--no-agent`).
 
 Instalador único em Python (Linux, macOS, Windows) — guia passo a passo em [`INSTALL.md`](../../INSTALL.md):
 
@@ -79,7 +79,7 @@ Ao instalar via agente: rode `--check` primeiro e, se faltar dependência ou cha
 
 | Job | Horário | Script |
 |---|---|---|
-| `choose-best-free-llm` | 02/08/14/20h | `run_model_selector_v4.py` |
+| `choose-best-free-llm` | 02/08/14h | `run_model_selector_v4.py` |
 
 **Nunca deixe outro script gravando `model.default`** (ex.: scripts antigos de seleção de modelo): com dois escritores o modelo depende de quem rodou por último e parece "não trocar" — ou ALTERNA a cada poucas horas (sintoma: dois jobs gravando modelos diferentes em horários alternados). O v4 é o **único escritor** de MAIN, `moa.aggregator`, `moa.reference_models` e `fallback_providers`; o instalador avisa se encontrar job legado. Diagnóstico: compare `config.yaml` × `state.json` e a origem do último backup em `backups/config/`.
 

@@ -23,7 +23,7 @@ Consulte um "council" de LLMs quando o usuário pedir opinião cruzada, compara�
 - Situações que precisam de resposta em tempo real
 
 ## Como funciona
-O script `<skill_dir>/council.py` lê `<perfil>/config.yaml` a cada execução (o seletor v4 roda 02/08/14/20h e é o único escritor de model.default, moa.* e fallback_providers). Membros, em ordem de prioridade:
+O script `<skill_dir>/council.py` lê `<perfil>/config.yaml` a cada execução (o seletor v4 roda 02/08/14h e é o único escritor de model.default, moa.* e fallback_providers). Membros, em ordem de prioridade:
 
 1. **Chairman** = `moa.aggregator` — o modelo que o free-llm escolheu para o MoA
 2. `model.default` (MAIN) — sem MoA configurado, MAIN assume o lugar de chairman

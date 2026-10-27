@@ -30,7 +30,7 @@ from pathlib import Path
 SCRIPTS = ("hermes-free-model-selector-v4.py", "run_model_selector_v4.py", "aa_scores.py",
             "nvidia_official_free.py")
 JOB_NAME = "choose-best-free-llm"
-SCHEDULE = "0 2,8,14,20 * * *"
+SCHEDULE = "0 2,8,14 * * *"
 LEGACY_JOBS = ("update-hermes-models", "update-free-models")
 
 KEYS = [
