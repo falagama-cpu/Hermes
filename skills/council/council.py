@@ -2,7 +2,7 @@
 # Lê <perfil>/config.yaml a cada execução. Perfil = $HERMES_HOME, ou
 # $COUNCIL_PROFILE (nome) sob o home padrão do Hermes:
 #   Linux/macOS ~/.hermes · Windows %LOCALAPPDATA%\hermes
-# O seletor free-LLM v4 atualiza model.default, moa.* e fallback_providers.
+# O seletor free-LLM V5 atualiza model.default, moa.* e fallback_providers.
 #
 # Estágios (cópia minimal do llm-council, sem servidor/web):
 #   1. Cada membro responde à query em paralelo
@@ -49,6 +49,11 @@ STATE_PATH.mkdir(parents=True, exist_ok=True)
 # quantas vezes cada posição pode ser trocada por um reserva após falhar.
 MEMBER_TIMEOUT_S = float(os.environ.get("COUNCIL_MEMBER_TIMEOUT", "120"))
 MEMBER_SWAPS = int(os.environ.get("COUNCIL_MEMBER_SWAPS", "2"))
+
+# not_free.json: o V5 grava exclusões momentâneas (NOT_FREE_TTL_S=0 no seletor,
+# que re-probeia o pool a cada execução). O Council aplica um TTL próprio para
+# não bloquear modelos por entradas antigas, respeitando restrições ainda vigentes.
+NOT_FREE_TTL_S = float(os.environ.get("COUNCIL_NOT_FREE_TTL_S", str(24 * 3600)))
 
 
 def _load_profile_env():
@@ -99,6 +104,8 @@ class StageOneResult:
     text: str
     elapsed_s: float
     error: Optional[str] = None
+    provider: str = ""
+    usage: Optional[dict] = None
 
 
 @dataclass
@@ -108,6 +115,8 @@ class StageTwoReview:
     ranking: list[str]   # labels tipo ["Response A","Response B",...] em ordem de preferência
     raw: str
     error: Optional[str] = None
+    provider: str = ""
+    usage: Optional[dict] = None
 
 
 @dataclass
@@ -120,6 +129,11 @@ class CouncilResult:
     final: str
     total_elapsed_s: float
     swaps: list = None  # trocas automáticas de membro: [{slot, from, to, reason}]
+    deduped: list = None      # modelos excluídos: [{model, provider, reason}]
+    reserves_used: list = None  # reservas que entraram em jogo: [model]
+    stage_times: dict = None  # {selection, stage1, stage2, stage3}
+    calls: int = 0            # chamadas de LLM (nominal)
+    tokens: dict = None       # {input, output, total} quando o provedor informa
 
 
 # ---------------------------------------------------------------- config ---
@@ -175,7 +189,8 @@ def _skip_unsupported(entry: dict) -> bool:
     return False
 
 
-def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[list[Member], Member]:
+def load_council_members(top_n: int = 4, pool_path: str | None = None,
+                         return_log: bool = False):
     """Lê config.yaml e devolve (members, chairman).
     Chairman = moa.aggregator — o modelo que o seletor free-llm escolheu
     para o MoA (slot ranqueado por qualidade, família e provider distintos
@@ -205,6 +220,8 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
             ))
         if len(members) < 2:
             raise RuntimeError(f"Pool externa tem menos de 2 membros válidos ({len(members)})")
+        if return_log:
+            return members, members[0], []
         return members, members[0]
 
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -223,7 +240,7 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
     fallbacks = cfg.get("fallback_providers", [])
 
     # Chairman = o modelo que o free-llm escolheu para o MoA (moa.aggregator).
-    # O seletor v4 já ranqueia esse slot por qualidade + fabricante/provider
+    # O seletor V5 já ranqueia esse slot por qualidade + fabricante/provider
     # distintos do MAIN, então é a escolha natural para sintetizar o council.
     # MAIN vira membro (opinião cruzada). Sem MoA configurado, MAIN assume.
     candidates: list = []
@@ -237,14 +254,19 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
     members: list[Member] = []
     seen: set[str] = set()
     used_providers: set[str] = set()
+    skipped: list[dict] = []
+    added_idx: set[int] = set()
     for allow_repeat in (False, True):
-        for entry in candidates:
+        for ci, entry in enumerate(candidates):
             if len(members) >= top_n:
                 break
             mid = str(entry.get("model") or "")
             # dedupe por modelo (ignora :free) — o mesmo modelo em 2 slots não soma opinião
             key = mid.lower().removesuffix(":free")
             if not mid or key in seen or entry.get("provider") == "moa":
+                if mid and key in seen and ci not in added_idx:
+                    skipped.append({"model": mid, "provider": entry.get("provider"),
+                                    "reason": "dedupe por modelo (ignora :free)"})
                 continue
             if _skip_unsupported(entry):
                 seen.add(key)
@@ -259,6 +281,7 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
             seen.add(key)
             used_providers.add(pkey)
             alias = f"m{len(members)+1}-{entry['model'].split('/')[-1][:20]}"
+            added_idx.add(ci)
             members.append(Member(
                 name=alias,
                 provider=entry["provider"],
@@ -272,7 +295,18 @@ def load_council_members(top_n: int = 4, pool_path: str | None = None) -> tuple[
 
     if len(members) < 2:
         raise RuntimeError(f"Council precisa de >=2 membros com chave; achei {len(members)}")
+    # dedup log: só entradas que de fato ficaram de fora, sem repetição
+    deduped: list[dict] = []
+    logged_dedup: set[tuple] = set()
+    for sk in skipped:
+        k = (sk["model"].lower().removesuffix(":free"), sk.get("provider"))
+        if k in logged_dedup:
+            continue
+        logged_dedup.add(k)
+        deduped.append(sk)
     chairman = members[0]  # moa.aggregator (MAIN se não houver MoA)
+    if return_log:
+        return members, chairman, deduped
     return members, chairman
 
 
@@ -301,6 +335,19 @@ def provider_key(m: "Member | dict") -> str:
     return prov
 
 
+def _active_not_free(path: Path) -> set[str]:
+    """Modelos efetivamente excluídos por restrição de plano.
+
+    O V5 grava not_free.json com NOT_FREE_TTL_S=0 (exclusões momentâneas).
+    O Council aplica um TTL próprio: entradas mais antigas que
+    COUNCIL_NOT_FREE_TTL_S não bloqueiam modelos válidos.
+    """
+    data = _read_json(path) or {}
+    now = time.time()
+    return {k for k, v in data.items()
+            if isinstance(v, dict) and now - float(v.get("ts", 0)) < NOT_FREE_TTL_S}
+
+
 def _read_json(path: Path) -> dict | list:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -319,7 +366,7 @@ def load_reserves(exclude_models: set[str], limit: int = 12) -> list[Member]:
     """
     sel = HERMES_HOME / "model-selector"
     rel = _read_json(sel / "reliability.json") or {}
-    not_free = _read_json(sel / "not_free.json") or {}
+    not_free = _active_not_free(sel / "not_free.json")
     catalog = _read_json(sel / "catalog.json")
     cat = catalog.get("models", []) if isinstance(catalog, dict) else []
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
@@ -396,7 +443,7 @@ def pick_reserve(reserves: list[Member], active_providers: "list[str] | set[str]
 # ---------------------------------------------------------------- client ---
 async def _chat(client: httpx.AsyncClient, m: Member, messages: list[dict],
                 temperature: float = 0.7, max_tokens: int = 8192,
-                retries: int = 3) -> str:
+                retries: int = 3) -> tuple[str, Optional[dict]]:
     url = f"{m.base_url}/chat/completions"
     # persona (ponytail, etc.) vira system prompt
     if m.persona:
@@ -417,7 +464,8 @@ async def _chat(client: httpx.AsyncClient, m: Member, messages: list[dict],
             if r.status_code in (429, 500, 502, 503):
                 raise httpx.HTTPStatusError(f"{r.status_code} rate limit/error", request=r.request, response=r)
             r.raise_for_status()
-            msg = r.json()["choices"][0]["message"]
+            payload = r.json()
+            msg = payload["choices"][0]["message"]
             text = msg.get("content")
             if not text:
                 # alguns modelos (ex. kimi-k3 na NVIDIA) devolvem reasoning_content
@@ -425,7 +473,11 @@ async def _chat(client: httpx.AsyncClient, m: Member, messages: list[dict],
                 text = msg.get("reasoning_content") or ""
             if not text:
                 raise RuntimeError(f"resposta vazia do modelo {m.model}")
-            return text
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                usage = {k: usage.get(k) for k in
+                         ("prompt_tokens", "completion_tokens", "total_tokens")}
+            return text, usage
         except (httpx.HTTPStatusError, httpx.TransportError) as e:
             last_err = e
             # 429 = capacidade/rate-limit da conta: a estratégia de council já
@@ -461,10 +513,11 @@ async def stage_one(query: str, members: list[Member],
             for attempt in range(MEMBER_SWAPS + 1):
                 t0 = time.time()
                 try:
-                    text = await asyncio.wait_for(
+                    text, usage = await asyncio.wait_for(
                         _chat(client, m, [{"role": "user", "content": query}]),
                         timeout=MEMBER_TIMEOUT_S)
-                    return StageOneResult(m.name, m.model, text, time.time() - t0)
+                    return StageOneResult(m.name, m.model, text, time.time() - t0,
+                                          provider=provider_key(m), usage=usage)
                 except Exception as e:  # noqa: BLE001 — qualquer falha = trocar membro
                     err = f"{type(e).__name__}: {e}"[:200] if str(e) else type(e).__name__
                     async with lock:
@@ -478,9 +531,11 @@ async def stage_one(query: str, members: list[Member],
                                           "reason": err[:120]})
                             members[idx] = sub   # visível aos outros slots já na próxima escolha
                     if sub is None:
-                        return StageOneResult(m.name, m.model, "", time.time() - t0, error=err)
+                        return StageOneResult(m.name, m.model, "", time.time() - t0, error=err,
+                                              provider=provider_key(m))
                     m = sub
-            return StageOneResult(m.name, m.model, "", 0.0, error="sem reserva")
+            return StageOneResult(m.name, m.model, "", 0.0, error="sem reserva",
+                                  provider=provider_key(m))
         return await asyncio.gather(*[one(i) for i in range(len(members))])
 
 
@@ -537,15 +592,18 @@ async def stage_two(query: str, stage1: list[StageOneResult], members: list[Memb
     async with httpx.AsyncClient() as client:
         async def one(m: Member) -> StageTwoReview:
             try:
-                raw = await asyncio.wait_for(
+                raw, usage = await asyncio.wait_for(
                     _chat(client, m, [{"role": "user", "content": prompt}],
                           temperature=0.0, max_tokens=2048),
                     timeout=MEMBER_TIMEOUT_S)
                 ranking = _parse_ranking(raw, valid_labels)
                 err = None if ranking else "ranking não reconhecido na resposta"
-                return StageTwoReview(m.name, m.model, ranking, raw[:2000], error=err)
+                return StageTwoReview(m.name, m.model, ranking, raw[:2000], error=err,
+                                      provider=provider_key(m), usage=usage)
             except Exception as e:  # noqa: BLE001
-                return StageTwoReview(m.name, m.model, [], "", error=f"{type(e).__name__}: {e}"[:200])
+                return StageTwoReview(m.name, m.model, [], "",
+                                      error=f"{type(e).__name__}: {e}"[:200],
+                                      provider=provider_key(m))
         reviews = await asyncio.gather(*[one(m) for m in reviewers])
         return reviews, label_to_member
 
@@ -571,7 +629,7 @@ Your job: synthesize a single, final, best-quality answer for the user.
 async def stage_three(query: str, stage1: list[StageOneResult],
                       stage2: list[StageTwoReview],
                       label_to_member: dict[str, str],
-                      chairman: Member) -> str:
+                      chairman: Member) -> tuple[str, Optional[dict]]:
     candidates = "\n\n".join(
         f"--- Candidate {i+1} ({s.member}, model={s.model}) ---\n{s.text}"
         for i, s in enumerate(stage1) if not s.error
@@ -607,12 +665,39 @@ def _is_coding_task(query: str) -> bool:
     return False
 
 
+# ------------------------------------------------------- observabilidade ---
+def _count_calls(s1: list, s2: list, swaps: list) -> int:
+    """Chamadas de LLM nominais: estágio 1 + rankings + síntese + trocas."""
+    return len(s1) + len(s2) + 1 + 2 * len(swaps)
+
+
+def _sum_tokens(s1: list, s2: list, usage) -> dict:
+    """Soma o usage informado pelos provedores; não inventa valores."""
+    total = {"input": 0, "output": 0, "total": 0}
+    for r in list(s1) + list(s2) + [usage]:
+        u = r if isinstance(r, dict) else getattr(r, "usage", None)
+        if not isinstance(u, dict):
+            continue
+        total["input"] += int(u.get("prompt_tokens") or 0)
+        total["output"] += int(u.get("completion_tokens") or 0)
+        total["total"] += int(u.get("total_tokens") or 0)
+    return total
+
+
+def _fmt_usage(u) -> str:
+    if not isinstance(u, dict):
+        return "tokens N/A"
+    return f"tokens {u.get('prompt_tokens', '?')}in/{u.get('completion_tokens', '?')}out"
+
+
 # ---------------------------------------------------------------- driver ---
 async def run_council(query: str, top_n: int = 4, pool_path: str | None = None,
                       auto_persona: bool = True) -> CouncilResult:
     t0 = time.time()
     started = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    members, chairman = load_council_members(top_n, pool_path=pool_path)
+    members, chairman, deduped = load_council_members(top_n, pool_path=pool_path,
+                                                     return_log=True)
+    t_sel = time.time() - t0
 
     # Aplica persona automática: 1 membro vira "ponytail" se a tarefa é de código
     # (nunca chairman, nunca todos — diversidade é o objetivo)
@@ -625,9 +710,13 @@ async def run_council(query: str, top_n: int = 4, pool_path: str | None = None,
 
     reserves = load_reserves({m.model for m in members}) if pool_path is None else []
     swaps: list[dict] = []
+    t1 = time.time()
     s1 = await stage_one(query, members, reserves=reserves, swaps=swaps)
+    t_s1 = time.time() - t1
     anon, label_map = _anonymize(s1)
+    t2 = time.time()
     s2, label_map = await stage_two(query, s1, members)
+    t_s2 = time.time() - t2
 
     # Chairman: o MAIN se respondeu no estágio 1; senão (ou se a síntese falhar)
     # o próximo membro que respondeu, em ordem de prioridade.
@@ -635,16 +724,18 @@ async def run_council(query: str, top_n: int = 4, pool_path: str | None = None,
     order = ([chairman] if chairman in members else []) + [m for m in answered if m is not chairman]
     if not answered:
         raise RuntimeError("Nenhum membro respondeu (nem os reservas).")
-    final, chairman_used, last_err = "", "", None
+    final, chairman_used, last_err, usage = "", "", None, None
+    t3 = time.time()
     for i, cand in enumerate(order):
         try:
-            final = await asyncio.wait_for(
+            final, usage = await asyncio.wait_for(
                 stage_three(query, s1, s2, label_map, cand), timeout=MEMBER_TIMEOUT_S * 2)
             chairman_used = cand.model if i == 0 and cand is chairman else \
                 f"{cand.model} (chairman substituto)"
             break
         except Exception as e:  # noqa: BLE001
             last_err = e
+    t_s3 = time.time() - t3
     if not final:
         raise RuntimeError(f"Síntese falhou em todos os candidatos a chairman ({last_err})")
 
@@ -655,6 +746,12 @@ async def run_council(query: str, top_n: int = 4, pool_path: str | None = None,
         final=final,
         total_elapsed_s=round(time.time() - t0, 2),
         swaps=swaps,
+        deduped=deduped,
+        reserves_used=[w["to"] for w in swaps],
+        stage_times={"selection": round(t_sel, 2), "stage1": round(t_s1, 2),
+                     "stage2": round(t_s2, 2), "stage3": round(t_s3, 2)},
+        calls=_count_calls(s1, s2, swaps),
+        tokens=_sum_tokens(s1, s2, usage),
     )
 
 
@@ -668,24 +765,37 @@ def to_markdown(r: CouncilResult) -> str:
         f"**Query:** {r.query}",
         f"**Chairman:** `{r.chairman_model}`",
         f"**Total:** {r.total_elapsed_s}s",
+        f"**Chamadas:** {r.calls} | **Tokens:** {_fmt_usage(r.tokens)}",
         "", "## Final answer", "", (r.final or "_(sem resposta final — todos os membros/chaiman falharam)_"), "",
-        "---", "", "## Stage 1 — first opinions",
+        "---", "",
     ]
+    if r.deduped:
+        lines += ["## Modelos deduplicados", ""] + [
+            f"- `{d['model']}` ({d.get('provider')}) — {d['reason']}" for d in r.deduped
+        ] + [""]
+    if r.stage_times:
+        lines += ["## Tempo por estágio", ""] + [
+            f"- {k}: {v}s" for k, v in r.stage_times.items()
+        ] + [""]
+    lines += ["## Stage 1 — first opinions"]
     if r.swaps:
         lines[-1:-1] = ["## Trocas automáticas de membro", ""] + [
             f"- slot {w['slot']}: `{w['from']}` → `{w['to']}` ({w['reason']})" for w in r.swaps
         ] + [""]
     for s in r.stage1:
+        prov = f", {s.provider}" if s.provider else ""
         if s.error:
-            lines.append(f"- **{s.member}** (`{s.model}`) — ❌ {s.error}")
+            lines.append(f"- **{s.member}** (`{s.model}`{prov}) — ❌ {s.error}")
         else:
-            lines.append(f"- **{s.member}** (`{s.model}`, {s.elapsed_s:.1f}s):\n\n```\n{(s.text or '')[:1500]}\n```\n")
+            tk = f", {_fmt_usage(s.usage)}" if s.usage else ""
+            lines.append(f"- **{s.member}** (`{s.model}`{prov}, {s.elapsed_s:.1f}s{tk}):\n\n```\n{(s.text or '')[:1500]}\n```\n")
     lines.append("## Stage 2 — peer rankings")
     for s in r.stage2:
+        prov = f", {s.provider}" if s.provider else ""
         if s.error:
-            lines.append(f"- **{s.reviewer}** — ❌ {s.error}")
+            lines.append(f"- **{s.reviewer}**{prov} — ❌ {s.error}")
         else:
-            lines.append(f"- **{s.reviewer}**: " + " > ".join(s.ranking or []))
+            lines.append(f"- **{s.reviewer}**{prov}: " + " > ".join(s.ranking or []))
     return "\n".join(str(x) for x in lines)
 
 
