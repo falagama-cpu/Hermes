@@ -1,6 +1,6 @@
 # Guia de instalação
 
-Instala o Hermes Agent, um perfil, a skill **free-llm** (seleção automática de LLMs
+Instala o Hermes Agent, um perfil, a skill **free-llm-v5** (seleção automática de LLMs
 gratuitas) e a skill **council** (conselho de LLMs). Vale para Linux, macOS e Windows.
 
 Convenções deste guia:
@@ -60,7 +60,7 @@ Todas têm plano gratuito.
 | `NVIDIA_API_KEY` | https://build.nvidia.com → Get API Key |
 | `NOUS_API_KEY` | https://portal.nousresearch.com → API Keys |
 | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | https://dash.cloudflare.com/profile/api-tokens (template "Workers AI") · Account ID no painel Workers AI |
-| *(login, sem chave)* OpenAI | `hermes auth add openai-codex` (conta ChatGPT). O seletor lê o token do `auth.json` sem renová-lo e confere a cota em `/wham/usage`; plano free = cota mensal pequena do Codex |
+| *(login, sem chave)* OpenAI | `hermes auth add openai-codex` (conta ChatGPT). O seletor lê o token do `auth.json` (ou do Codex CLI); se só houver token vencido, pede ao próprio Hermes para renovar (`hermes auth refresh openai-codex`). Confere a cota em `/wham/usage`; plano free = cota mensal pequena do Codex |
 | `GOOGLE_API_KEY` | https://aistudio.google.com/apikey — Gemini no free tier da chave (~20 req/dia por modelo; o Hermes troca para o fallback no 429) |
 
 Você **não** precisa editar arquivos: o instalador pergunta cada chave ausente com entrada
@@ -70,18 +70,18 @@ oculta e grava no `.env` do perfil (permissão 600 no Linux/macOS). Regras de se
 - o `.env` fica fora deste repositório, dentro do perfil Hermes;
 - se uma chave vazar, **revogue-a** no painel do provedor e gere outra.
 
-## 4. Instalar a skill free-llm
+## 4. Instalar a skill free-llm-v5
 
 ```bash
 # Linux / macOS
-python3 skills/free-llm/scripts/install.py <perfil> --check    # só verifica, não instala
-python3 skills/free-llm/scripts/install.py <perfil> [deliver]
+python3 skills/free-llm-v5/scripts/install.py <perfil> --check    # só verifica, não instala
+python3 skills/free-llm-v5/scripts/install.py <perfil> [deliver]
 ```
 
 ```powershell
 # Windows
-py skills\free-llm\scripts\install.py <perfil> --check
-py skills\free-llm\scripts\install.py <perfil> [deliver]
+py skills\free-llm-v5\scripts\install.py <perfil> --check
+py skills\free-llm-v5\scripts\install.py <perfil> [deliver]
 ```
 
 `[deliver]` = para onde vai o relatório de cada execução: `local` (padrão, só fica salvo),
@@ -92,8 +92,8 @@ O instalador, nesta ordem:
 1. verifica dependências (`hermes` no PATH, perfil existe, Python ≥ 3.9) — se faltar algo,
    **aborta sem copiar nada** e mostra como instalar;
 2. pede as chaves ausentes (Enter pula) — sem nenhum provedor, aborta;
-3. copia 3 scripts para `<perfil>/scripts/` e cria o job `choose-best-free-llm`
-   (02h, 08h, 14h e 20h).
+3. copia 4 scripts para `<perfil>/scripts/` e cria o job `choose-best-free-llm-v5`
+   (02h, 10h e 18h). Se achar o job da V4 (`choose-best-free-llm`), avisa para removê-lo.
 
 Opções: `--yes` (não interativo: não pergunta chaves), `--check`.
 
@@ -102,13 +102,13 @@ Para o agente também conhecer a skill (opcional):
 ```bash
 # Linux / macOS
 mkdir -p ~/.hermes/profiles/<perfil>/skills
-cp -r skills/free-llm ~/.hermes/profiles/<perfil>/skills/
+cp -r skills/free-llm-v5 ~/.hermes/profiles/<perfil>/skills/
 ```
 
 ```powershell
 # Windows
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\hermes\profiles\<perfil>\skills" | Out-Null
-Copy-Item -Recurse skills\free-llm "$env:LOCALAPPDATA\hermes\profiles\<perfil>\skills\"
+Copy-Item -Recurse skills\free-llm-v5 "$env:LOCALAPPDATA\hermes\profiles\<perfil>\skills\"
 ```
 
 ### Verificar
@@ -117,7 +117,7 @@ Copy-Item -Recurse skills\free-llm "$env:LOCALAPPDATA\hermes\profiles\<perfil>\s
 # Linux / macOS
 hermes -p <perfil> cron list
 cd ~/.hermes/profiles/<perfil>/scripts
-HERMES_HOME=~/.hermes/profiles/<perfil> python3 run_model_selector_v4.py --dry-run --force --no-restart
+HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v5.py --dry-run --force
 ```
 
 ```powershell
@@ -125,7 +125,7 @@ HERMES_HOME=~/.hermes/profiles/<perfil> python3 run_model_selector_v4.py --dry-r
 hermes -p <perfil> cron list
 cd "$env:LOCALAPPDATA\hermes\profiles\<perfil>\scripts"
 $env:HERMES_HOME = "$env:LOCALAPPDATA\hermes\profiles\<perfil>"
-py run_model_selector_v4.py --dry-run --force --no-restart
+py hermes-free-model-selector-v5.py --dry-run --force
 ```
 
 A simulação (`--dry-run`) mostra a seleção proposta e **não altera** o `config.yaml`.
@@ -172,7 +172,7 @@ uv run python -c "import council;[print(m.name,m.provider) for m in council.load
 
 ```bash
 cd Hermes && git pull
-python3 skills/free-llm/scripts/install.py <perfil>     # Windows: py ...
+python3 skills/free-llm-v5/scripts/install.py <perfil>     # Windows: py ...
 ```
 
 O instalador recopia os scripts e não duplica o job.
@@ -180,12 +180,13 @@ O instalador recopia os scripts e não duplica o job.
 ## 7. Desinstalar
 
 ```bash
-hermes -p <perfil> cron list          # anote o id de choose-best-free-llm
+hermes -p <perfil> cron list          # anote o id de choose-best-free-llm-v5
 hermes -p <perfil> cron remove <id>
 ```
 
-Depois apague, dentro do perfil: `scripts/hermes-free-model-selector-v4.py`,
-`scripts/run_model_selector_v4.py`, `scripts/aa_scores.py` e a pasta `model-selector/`.
+Depois apague, dentro do perfil: `scripts/hermes-free-model-selector-v5.py`,
+`scripts/run_model_selector_v5.py`, `scripts/aa_scores.py`, `scripts/nvidia_official_free.py`
+e a pasta `model-selector/`.
 O `config.yaml` fica com a última seleção; troque o modelo com `hermes -p <perfil> model`.
 
 ## Problemas comuns
@@ -196,8 +197,10 @@ O `config.yaml` fica com a última seleção; troque o modelo com `hermes -p <pe
 | `perfil '<perfil>' não existe` | `hermes profile create <perfil>` |
 | `nenhuma chave de provedor` | Rode o instalador sem `--yes` e informe ao menos uma chave. |
 | Modelo "não troca" | Confira se outro job grava `model.default`; sessões abertas precisam de `/new`. |
-| Cloudflare 403 `code 5035` | O modelo não está no plano gratuito da conta; o seletor o exclui por 7 dias. |
+| ChatGPT "sem token válido — fonte ignorada. Motivo: …" | O log diz o motivo (ausente, vencido, não-JWT). Rode `hermes auth refresh openai-codex` ou `hermes auth add openai-codex`. |
+| `unknown url type` no probe | Alguma variável `*_BASE_URL` no `.env` tem valor que não é URL (ex.: uma API key). |
+| Cloudflare 403 `code 5035` | O modelo não está no plano gratuito da conta; fica fora da execução (V5: `HERMES_NOT_FREE_TTL_S`, padrão 0 = só a rodada atual). |
 | OpenAI "cota do Codex esgotada até DD/MM" | Cota mensal do login ChatGPT gasta; a fonte volta sozinha após o reset. |
-| Google 429 `limit: 0` | O Gemini não está no free tier da chave; o seletor o exclui por 7 dias. 429 com limite > 0 = cota diária gasta: fica fora só daquela execução. |
+| Google 429 `limit: 0` | O Gemini não está no free tier da chave: o probe o rejeita e ele não é gravado. 429 com limite > 0 = cota diária gasta: também rejeitado naquela execução. |
 | Relatório não chega | `deliver` = `local`, ou gateway não configurado (`hermes -p <perfil> gateway setup`). |
 | Acentos estranhos no Windows | Use o Windows Terminal; os scripts já forçam UTF-8. |

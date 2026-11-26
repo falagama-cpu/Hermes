@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""install.py — instala o seletor de LLMs FREE (v4 + ranking Artificial Analysis)
+"""install.py — instala o seletor de LLMs FREE V5 (arquivo único, seleção V5.2)
 em um perfil do Hermes Agent. Multiplataforma: Linux, macOS e Windows.
 
 Uso:
@@ -27,11 +27,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPTS = ("hermes-free-model-selector-v4.py", "run_model_selector_v4.py", "aa_scores.py",
+SCRIPTS = ("hermes-free-model-selector-v5.py", "run_model_selector_v5.py", "aa_scores.py",
             "nvidia_official_free.py")
-JOB_NAME = "choose-best-free-llm"
-SCHEDULE = "0 2,8,14 * * *"
-LEGACY_JOBS = ("update-hermes-models", "update-free-models")
+JOB_NAME = "choose-best-free-llm-v5"
+SCRIPT_ENTRY = "run_model_selector_v5.py"
+SCHEDULE = "0 2,10,18 * * *"
+# Jobs antigos que também gravam model.default: dois escritores conflitam.
+# "choose-best-free-llm" = seletor V4.
+LEGACY_JOBS = ("choose-best-free-llm", "update-hermes-models", "update-free-models")
 
 KEYS = [
     ("ARTIFICIAL_ANALYSIS_API_KEY", "https://artificialanalysis.ai → API Access (grátis, 1000 req/dia; ranking por benchmark)"),
@@ -223,22 +226,24 @@ def main() -> int:
         warn(f"job {JOB_NAME} já existe — não recriado (ajuste: hermes {' '.join(pargs)} cron edit <id>)")
     else:
         r = hermes(["cron", "create", SCHEDULE, "--name", JOB_NAME,
-                    "--script", "run_model_selector_v4.py", "--no-agent",
+                    "--script", SCRIPT_ENTRY, "--no-agent",
                     "--deliver", deliver], pargs)
         if r.returncode != 0:
             bad(f"falha ao criar o job: {(r.stderr or r.stdout).strip()[:300]}")
             return 1
         ok(f"job {JOB_NAME} ({SCHEDULE}, deliver={deliver})")
-    if any(j in jobs for j in LEGACY_JOBS):
-        warn("job legado encontrado — pause-o (dois jobs gravando model.default conflitam):")
+    legacy = [j for j in LEGACY_JOBS if any(j in ln.split() for ln in jobs.splitlines())]
+    if legacy:
+        warn(f"job(s) legado(s) {', '.join(legacy)} — pause/remova (dois jobs gravando model.default conflitam):")
         print(f"      hermes {' '.join(pargs)} cron list ; hermes {' '.join(pargs)} cron pause <job_id>")
 
     print("\n=== 4. Teste (simulação, não grava config) ===")
     py = "py" if sys.platform == "win32" else "python3"
     if sys.platform == "win32":
-        print(f'  cd "{dst}"; $env:HERMES_HOME="{phome}"; {py} run_model_selector_v4.py --dry-run --force --no-restart')
+        print(f'  cd "{dst}"; $env:HERMES_HOME="{phome}"; {py} hermes-free-model-selector-v5.py --dry-run --force')
     else:
-        print(f'  cd "{dst}" && HERMES_HOME="{phome}" {py} run_model_selector_v4.py --dry-run --force --no-restart')
+        print(f'  cd "{dst}" && HERMES_HOME="{phome}" {py} hermes-free-model-selector-v5.py --dry-run --force')
+    print("  (o cron chama run_model_selector_v5.py, que roda o seletor e resume MAIN/MOA/fallbacks)")
     return 0
 
 

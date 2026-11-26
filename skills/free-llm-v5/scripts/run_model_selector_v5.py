@@ -19,8 +19,11 @@ HERE = Path(__file__).resolve().parent
 # Seletor: mesmo diretório deste wrapper; sobrescreva com FREE_LLM_V5_SELECTOR.
 SELECTOR = Path(os.environ.get("FREE_LLM_V5_SELECTOR")
                 or HERE / "hermes-free-model-selector-v5.py")
-# Perfil alvo: defina HERMES_HOME explicitamente (ex.: ~/.hermes/profiles/<perfil>).
-HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+# Perfil alvo: HERMES_HOME; senão o perfil dono (instalado em <perfil>/scripts/, mesma
+# regra do seletor); por último ~/.hermes. Nunca cair no default por engano.
+_OWNER = HERE.parent
+HOME = Path(os.environ.get("HERMES_HOME")
+            or (_OWNER if (_OWNER / "config.yaml").exists() else Path.home() / ".hermes"))
 CONFIG = HOME / "config.yaml"
 STATE = HOME / "model-selector" / "state.json"
 LOG = HOME / "model-selector" / "last_run_v5.log"

@@ -8,8 +8,8 @@ seletor grava. Não execute o seletor, nem o Council, nem o cron.
 Não presuma nomes de diretórios. Localize:
 
 - a skill consumidora (`skills/council/`);
-- a skill produtora (no perfil: `skills/data-science/free-llm/` = V4; o V5 fica no
-  repositório Hermes: `../../free-llm-v5/` — confirme pelo symlink do script);
+- a skill produtora: `../../free-llm-v5/` (V5 arquivo único; a V4 `free-llm` foi removida
+  em 2026-11-26 — confirme qual seletor o cron do perfil chama em `<perfil>/scripts/`);
 - o script que o cron realmente executa — confirme pelo symlink em `<perfil>/scripts/`
   (ex.: `run_model_selector_v5.py` → `hermes-free-model-selector-v5-integrated.py`);
 - `config.yaml`, `model-selector/catalog.json`, `reliability.json`, `not_free.json`,

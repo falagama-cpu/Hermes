@@ -394,6 +394,23 @@ class T6Wrapper(unittest.TestCase):
     def test_default_points_to_unified_selector(self):
         self.assertIn('HERE / "hermes-free-model-selector-v5.py"', WRAPPER.read_text(encoding="utf-8"))
 
+    def test_without_hermes_home_targets_owner_profile(self):
+        """Instalado em <perfil>/scripts/ e sem HERMES_HOME: age no perfil dono, nunca no default."""
+        prof = Path(tempfile.mkdtemp(prefix="t_v5_owner_"))
+        try:
+            (prof / "scripts").mkdir(); (prof / "model-selector").mkdir()
+            (prof / "config.yaml").write_text("model:\n  default: x\n  provider: p\n")
+            shutil.copy(WRAPPER, prof / "scripts" / WRAPPER.name)
+            probe = prof / "seen_home.txt"
+            (prof / "scripts" / "hermes-free-model-selector-v5.py").write_text(
+                f"import os; open({str(probe)!r}, 'w').write(os.environ['HERMES_HOME'])\n")
+            env = _clean_env(prof); env.pop("HERMES_HOME")
+            subprocess.run([sys.executable, str(prof / "scripts" / WRAPPER.name)], env=env,
+                           capture_output=True, text=True, timeout=60)
+            self.assertEqual(Path(probe.read_text()), prof)
+        finally:
+            shutil.rmtree(prof, ignore_errors=True)
+
     def test_success_reports_selection(self):
         body = ("import json, os, pathlib\n"
                 "h = pathlib.Path(os.environ['HERMES_HOME'])\n"

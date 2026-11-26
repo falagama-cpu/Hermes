@@ -5,8 +5,7 @@ Funcionam em **Linux, macOS e Windows**. Guia de instalação completo: [`INSTAL
 
 | Skill | O que faz |
 |---|---|
-| [`free-llm`](skills/free-llm/SKILL.md) | Um job de cron escolhe o modelo principal (MAIN), o MoA (aggregator + reference models) e 3 fallbacks **somente entre modelos gratuitos** de OpenRouter, NVIDIA NIM, Nous Portal, Cloudflare Workers AI, Google AI Studio (Gemini) e OpenAI via login ChatGPT, ranqueados pelos benchmarks da [Artificial Analysis](https://artificialanalysis.ai), e grava no `config.yaml` do perfil. |
-| [`free-llm-v5`](skills/free-llm-v5/SKILL.md) | Seletor V5 em **arquivo único** (sem dependência da V4): infraestrutura operacional + seleção por papel V5.1 (MAIN / MoA / fallbacks), com login ChatGPT (OpenAI Codex) robusto, wrapper de cron, 22 testes offline e [auditoria de testes](skills/free-llm-v5/references/V5_TEST_AUDIT.md). |
+| [`free-llm-v5`](skills/free-llm-v5/SKILL.md) | Um job de cron escolhe o modelo principal (MAIN), o MoA (aggregator + reference models) e 3 fallbacks **somente entre modelos gratuitos** de OpenRouter, NVIDIA NIM, Nous Portal, Cloudflare Workers AI, Google AI Studio (Gemini) e OpenAI via login ChatGPT, ranqueados pelos benchmarks da [Artificial Analysis](https://artificialanalysis.ai), e grava no `config.yaml` do perfil. Arquivo único, seleção determinística (V5.2), 31 testes offline e [auditoria](skills/free-llm-v5/references/V5_TEST_AUDIT.md). Substitui a antiga `free-llm` (V4). |
 | [`council`](skills/council/SKILL.md) | Conselho de LLMs: os modelos do perfil respondem em paralelo, ranqueiam as respostas uns dos outros de forma anônima e um chairman sintetiza a resposta final. |
 
 ## Instalação rápida
@@ -16,7 +15,7 @@ Funcionam em **Linux, macOS e Windows**. Guia de instalação completo: [`INSTAL
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 hermes profile create <perfil>
 git clone https://github.com/falagama-cpu/Hermes.git
-python3 Hermes/skills/free-llm/scripts/install.py <perfil>
+python3 Hermes/skills/free-llm-v5/scripts/install.py <perfil>
 ```
 
 ```powershell
@@ -24,7 +23,7 @@ python3 Hermes/skills/free-llm/scripts/install.py <perfil>
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 hermes profile create <perfil>
 git clone https://github.com/falagama-cpu/Hermes.git
-py Hermes\skills\free-llm\scripts\install.py <perfil>
+py Hermes\skills\free-llm-v5\scripts\install.py <perfil>
 ```
 
 O instalador verifica as dependências, pede as chaves de API ausentes com entrada oculta
