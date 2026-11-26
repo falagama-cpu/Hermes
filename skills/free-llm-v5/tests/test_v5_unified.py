@@ -152,7 +152,7 @@ class T3Golden(Base):
         """DEFEITO CONHECIDO da seleção V5.1 (auditoria 2026-11-26, achado A1): empate
         exato de _role_score (ex.: 79.69 x 79.69) é decidido pela ORDEM do catálogo, e
         a rota dentro da família ignora a qualidade. 100 embaralhamentos do fixture ->
-        2 MAINs e 83 seleções distintas (V4: 1). Quando o algoritmo for corrigido este
+        63 seleções completas distintas (V4: 2). Quando o algoritmo for corrigido este
         teste passa e o expectedFailure deve sair."""
         import random
         a = self.select(self.pool())

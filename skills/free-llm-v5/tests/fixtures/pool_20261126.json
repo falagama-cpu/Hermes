@@ -170,6 +170,40 @@
    "name": "Free Models Router"
   },
   {
+   "_model_id": "upstage/solar-mini4:free",
+   "_source": "nous",
+   "_family": "upstage/solar-mini4-20260922",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 70.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 524288,
+   "id": "upstage/solar-mini4:free",
+   "name": "Upstage: Solar Mini 4 (free)"
+  },
+  {
+   "_model_id": "tencent/hy4-flash:free",
+   "_source": "nous",
+   "_family": "tencent/hy4-flash-20261116",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "tencent/hy4-flash:free",
+   "name": "Tencent: Hy4 flash (free)"
+  },
+  {
    "_model_id": "@cf/openai/gpt-oss-120b",
    "_source": "cloudflare",
    "_family": "@cf/openai/gpt-oss-120b",
@@ -982,15 +1016,15 @@
   }
  ],
  "expected": {
-  "main": "baidu/ernie-5.5-flash-preview:free",
-  "moa": "nvidia/nemotron-3-ultra-550b-a55b",
+  "main": "tencent/hy4-flash:free",
+  "moa": "baidu/ernie-5.5-flash-preview:free",
   "fallbacks": [
    [
-    "@cf/openai/gpt-oss-120b",
+    "mistralai/mistral-large-4-1t-a52b",
     "coding-agent"
    ],
    [
-    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "@cf/daily-co/phonellm-mini-alpha-2",
     "reasoning"
    ],
    [
@@ -999,8 +1033,8 @@
    ]
   ],
   "refs": [
-   "@cf/qwen/qwen3.8-27b",
-   "gpt-5.6-terra"
+   "nvidia/nemotron-3-ultra-550b-a55b",
+   "@cf/openai/gpt-oss-120b"
   ],
   "score_role": {
    "inclusionai/ling-3.2-flash:free|openrouter|main": 61.13,
@@ -1048,21 +1082,21 @@
    "openrouter/free|openrouter|coding": 48.0,
    "openrouter/free|openrouter|reasoning": 76.0,
    "openrouter/free|openrouter|long_context": 60.0,
+   "upstage/solar-mini4:free|nous|main": 72.65,
+   "upstage/solar-mini4:free|nous|moa": 68.013,
+   "upstage/solar-mini4:free|nous|coding": 49.5,
+   "upstage/solar-mini4:free|nous|reasoning": 77.5,
+   "upstage/solar-mini4:free|nous|long_context": 74.5,
+   "tencent/hy4-flash:free|nous|main": 81.19,
+   "tencent/hy4-flash:free|nous|moa": 72.621,
+   "tencent/hy4-flash:free|nous|coding": 77.5,
+   "tencent/hy4-flash:free|nous|reasoning": 77.5,
+   "tencent/hy4-flash:free|nous|long_context": 84.5,
    "@cf/openai/gpt-oss-120b|cloudflare|main": 72.51,
    "@cf/openai/gpt-oss-120b|cloudflare|moa": 65.461,
    "@cf/openai/gpt-oss-120b|cloudflare|coding": 77.0,
    "@cf/openai/gpt-oss-120b|cloudflare|reasoning": 77.0,
-   "@cf/openai/gpt-oss-120b|cloudflare|long_context": 54.0,
-   "@cf/cloudflare/clairic-flash|cloudflare|main": 46.2,
-   "@cf/cloudflare/clairic-flash|cloudflare|moa": 41.98,
-   "@cf/cloudflare/clairic-flash|cloudflare|coding": 49.0,
-   "@cf/cloudflare/clairic-flash|cloudflare|reasoning": 49.0,
-   "@cf/cloudflare/clairic-flash|cloudflare|long_context": 34.0,
-   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|main": 56.19,
-   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|moa": 48.343,
-   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|coding": 77.0,
-   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|reasoning": 49.0,
-   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|long_context": 54.0
+   "@cf/openai/gpt-oss-120b|cloudflare|long_context": 54.0
   }
  }
 }

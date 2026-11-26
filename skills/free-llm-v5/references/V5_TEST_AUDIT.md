@@ -8,7 +8,7 @@ encontrados na seleção V5.1. Nenhum teste tocou perfil real (HERMES_HOME desca
 
 | Verificação | Resultado |
 |---|---|
-| Paridade função a função vs. antiga "V5 integrated" (monkey-patch da V4) — pool real (53 modelos, 5 fontes) | **idêntico** (scores de 6 papéis, MAIN, MOA, fallbacks, reference models, ordem de candidatos) |
+| Paridade função a função vs. antiga "V5 integrated" (monkey-patch da V4) — pool real (55 modelos, 6 fontes) | **idêntico** (scores de 6 papéis, MAIN, MOA, fallbacks, reference models, ordem de candidatos) |
 | Paridade em 300 pools sintéticos aleatórios (caps/fonte/AA perturbados, ordem embaralhada) | **0 divergências** |
 | Sanidade do teste de paridade (mutação proposital de um bônus) | mutação **detectada** |
 | `--dry-run` real ponta a ponta (rede + probes), integrated × unificada | mesmo MAIN, MOA, reference models e mesma sequência de probes. Fallbacks diferiram só porque o probe de um modelo deu timeout numa execução e 200 na outra (variação de rede, não de código). |
@@ -42,11 +42,11 @@ contra dados reais; a "paridade V5.1" anterior nunca executou.
 
 ## 4. Defeitos encontrados na seleção V5.1 (herdados; NÃO corrigidos — mudam o comportamento)
 
-Medidos no fixture real (53 modelos), 100 embaralhamentos da mesma lista:
+Medidos no fixture real (55 modelos, 6 fontes), 100 embaralhamentos da mesma lista:
 
 | # | Defeito | Evidência | V4 |
 |---|---|---|---|
-| A1 | **Resultado depende da ordem do catálogo.** Empates exatos de score decididos por quem vem primeiro. | 2 MAINs distintos (54/46) e **83 seleções completas distintas em 100** | 1 seleção |
+| A1 | **Resultado depende da ordem do catálogo.** Empates exatos de score (ex.: 79,69 × 79,69) decididos por quem vem primeiro; a rota dentro da família também. | MAIN estável neste pool, mas **63 seleções completas distintas em 100** (MOA/fallbacks/refs mudam). Num pool sem Nous: 2 MAINs (54/46) e 83/100 | 2/100 |
 | A2 | **Benchmark Artificial Analysis ignorado** no score (a mistura `AA_WEIGHT=0.85` da V4 sumiu; só heurística por palavras-chave). | modelo nº 1 por AA (score 91,9 na V4) fora do top-6 da V5; um modelo de 1,7B empata com modelos de 550B | usa AA |
 | A3 | **Confiabilidade ignorada no score** (latência EMA / falhas recentes); `_REL` só serve para quarentena. | `reliability_penalty` não é chamada pela V5.1 | penaliza |
 | A4 | **Bônus de contexto é código morto:** compara a *nota* `_caps.long_context` (0–100) com `MIN_CONTEXT` (65 536 *tokens*). | nunca verdadeiro | usa `_context` (tokens) |
@@ -54,7 +54,7 @@ Medidos no fixture real (53 modelos), 100 embaralhamentos da mesma lista:
 | A6 | **Rota dentro da família ignora qualidade:** `_role_score` ainda não existe quando a rota é escolhida (vale 0). | escolhe por fonte inédita / primeira da lista | usa score + fonte + contexto |
 | A7 | **Perdeu a penalidade −25 por provedor repetido nos fallbacks** (correção da V4 após cadeia inteira cair por cota de um único provedor). | ausente em `_v51_fallback_score` | presente |
 | A8 | Fallbacks usam **uma única capacidade crua** em vez das fórmulas ponderadas por perfil; pesos `fallback1..3` nunca são usados. | `role in caps → caps[role]` | fórmulas por papel |
-| A9 | **Mesmo modelo em dois papéis** por provedores diferentes (ex.: MAIN via OpenRouter e MOA via NVIDIA). | **54/100** ordens | 0/100 |
+| A9 | **Mesmo modelo em dois papéis** por provedores diferentes (ex.: nemotron-3-ultra via OpenRouter e via NVIDIA). | **21/100** ordens (54/100 no pool sem Nous) | 0/100 |
 
 Outros achados operacionais:
 - A10 — instalações que copiaram só os arquivos de seleção ficaram **sem `nvidia_official_free.py`**: a validação do badge oficial "Free Endpoint" da NVIDIA é pulada em todo ciclo (log: "módulo nvidia_official_free.py ausente"). A skill unificada inclui o módulo.
