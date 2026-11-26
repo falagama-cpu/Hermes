@@ -563,7 +563,25 @@ def pricing_zero(model: Dict[str, Any]) -> bool:
     return False
 
 
+def canonical_family(value: Any) -> str:
+    """Forma canônica de uma família para comparar ENTRE provedores (V5.2).
+
+    O canonical_slug do OpenRouter carrega a data da versão
+    ("nvidia/nemotron-3-ultra-550b-a55b-20260604") e o Cloudflare prefixa "@cf/";
+    sem isso a mesma LLM via OpenRouter e via NVIDIA virava duas famílias e podia
+    ocupar dois papéis (auditoria A9)."""
+    text = normalize(value)
+    text = re.sub(r"^@cf/", "", text)
+    text = re.sub(r"-20\d{6}$", "", text)
+    return text
+
+
 def family_key(model: Dict[str, Any]) -> str:
+    """Chave canônica da família (V5.2): ver canonical_family()."""
+    return canonical_family(_family_key_raw(model))
+
+
+def _family_key_raw(model: Dict[str, Any]) -> str:
     """
     Chave da família da LLM.
 
@@ -3996,16 +4014,111 @@ def _v51_choose_fallbacks(
     return selected
 
 
-# Implementações da V4 preservadas (referência/rollback), depois os rebinds V5.1.
+# =============================================================================
+# SELEÇÃO V5.2 (padrão) — correção dos defeitos A1-A9 da auditoria
+# =============================================================================
+# Base = funções de seleção da infraestrutura (score com Artificial Analysis +
+# penalidade de confiabilidade, contexto em tokens, fórmulas por papel nos
+# fallbacks, -25 por provedor repetido), com:
+#   * família canônica entre provedores (canonical_family) -> A9;
+#   * ordem total determinística: rotas e candidatos ordenados por
+#     (model_id, source) ANTES de qualquer max()/sorted() estável -> A1;
+#   * bônus por provedor da V5.1 (_V51_SOURCE_BONUS) como preferência de rota.
+# Rollback: HERMES_V5_SELECTION=5.1 restaura a seleção V5.1 original.
+
+def _route_order(model: Dict[str, Any]) -> Tuple[str, str]:
+    return (str(model.get("_model_id") or ""), str(model.get("_source") or ""))
+
+
+def _v52_group_by_family(models: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for model in sorted(models, key=_route_order):
+        groups.setdefault(canonical_family(model["_family"]), []).append(model)
+    return dict(sorted(groups.items()))
+
+
+def _v52_best_route_for_family(
+    models: List[Dict[str, Any]],
+    role: str,
+    used_sources: Optional[Set[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    used_sources = used_sources or set()
+
+    def route_score(model: Dict[str, Any]) -> float:
+        score = score_role(model, role)
+        if model["_source"] not in used_sources:
+            score += SOURCE_BONUS.get(model["_source"], 0)
+        if model.get("_context", 0) >= MIN_CONTEXT:
+            score += 3
+        return score
+
+    if not models:
+        return None
+    return max(sorted(models, key=_route_order), key=route_score)
+
+
+def _v52_family_candidates(
+    models: List[Dict[str, Any]],
+    role: str,
+    used_families: Set[str],
+    used_sources: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    used = {canonical_family(f) for f in used_families}
+    result = []
+    for family, routes in _v52_group_by_family(models).items():
+        if family in used:
+            continue
+        best = best_route_for_family(routes, role, used_sources=used_sources)
+        if best:
+            candidate = copy.deepcopy(best)
+            candidate["_role_score"] = score_role(candidate, role)
+            result.append(candidate)
+    return sorted(result, key=_route_order)
+
+
+def _v52_fallback_score(
+    model: Dict[str, Any],
+    profile: str,
+    selected: List[Dict[str, Any]],
+    used_sources: Set[str],
+) -> float:
+    """fallback_score da infraestrutura + a mesma penalidade (-25) quando o fallback
+    é do provedor do MAIN/MOA (achado A13): cota esgotada nesse provedor derrubaria o
+    primário E o fallback juntos. Ainda permite quando não há outra fonte."""
+    base = _v4_fallback_score(model, profile, selected, used_sources)
+    primary_sources = set(used_sources) - {p["_source"] for p in selected}
+    if model["_source"] in primary_sources:
+        base -= 25
+    return base
+
+
+_v4_group_by_family = group_by_family
+_v4_best_route_for_family = best_route_for_family
+_v4_family_candidates = family_candidates
 _v4_score_role = score_role
 _v4_choose_main = choose_main
 _v4_choose_moa = choose_moa
 _v4_choose_fallbacks = choose_fallbacks
+_v4_fallback_score = fallback_score
+_V4_SOURCE_BONUS = dict(SOURCE_BONUS)
 
-score_role = _v51_score_role
-choose_main = _v51_choose_main
-choose_moa = _v51_choose_moa
-choose_fallbacks = _v51_choose_fallbacks
+SELECTION_MODE = os.environ.get("HERMES_V5_SELECTION", "5.2").strip()
+
+if SELECTION_MODE == "5.1":
+    # Seleção V5.1 original (idêntica à antiga "V5 integrated").
+    score_role = _v51_score_role
+    choose_main = _v51_choose_main
+    choose_moa = _v51_choose_moa
+    choose_fallbacks = _v51_choose_fallbacks
+else:
+    SELECTION_MODE = "5.2"
+    SOURCE_BONUS = dict(_V51_SOURCE_BONUS)
+    group_by_family = _v52_group_by_family
+    best_route_for_family = _v52_best_route_for_family
+    family_candidates = _v52_family_candidates
+    fallback_score = _v52_fallback_score
+    # score_role, choose_main, choose_moa, choose_moa_references, choose_fallbacks e
+    # fallback_score: implementações da infraestrutura, que chamam as globais acima.
 
 SELECTOR_VERSION = "5.2.0"
 
@@ -4065,7 +4178,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"Hermes Free LLM Selector V{SELECTOR_VERSION} "
-          "(arquivo único: infra V4 + seleção V5.1)")
+          f"(arquivo único; seleção {SELECTION_MODE})")
     try:
         return run(args)
     except KeyboardInterrupt:

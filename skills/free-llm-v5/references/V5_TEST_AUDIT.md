@@ -40,7 +40,7 @@ contra dados reais; a "paridade V5.1" anterior nunca executou.
 - **Wrapper de cron:** aponta para o arquivo único; sucesso imprime MAIN/FB; `state.json` não atualizado → exit 3.
 - **Defeito conhecido A1** como `expectedFailure` (vira alerta quando for corrigido).
 
-## 4. Defeitos encontrados na seleção V5.1 (herdados; NÃO corrigidos — mudam o comportamento)
+## 4. Defeitos encontrados na seleção V5.1 (corrigidos na V5.2 — ver seção 5)
 
 Medidos no fixture real (55 modelos, 6 fontes), 100 embaralhamentos da mesma lista:
 
@@ -55,13 +55,51 @@ Medidos no fixture real (55 modelos, 6 fontes), 100 embaralhamentos da mesma lis
 | A7 | **Perdeu a penalidade −25 por provedor repetido nos fallbacks** (correção da V4 após cadeia inteira cair por cota de um único provedor). | ausente em `_v51_fallback_score` | presente |
 | A8 | Fallbacks usam **uma única capacidade crua** em vez das fórmulas ponderadas por perfil; pesos `fallback1..3` nunca são usados. | `role in caps → caps[role]` | fórmulas por papel |
 | A9 | **Mesmo modelo em dois papéis** por provedores diferentes (ex.: nemotron-3-ultra via OpenRouter e via NVIDIA). | **21/100** ordens (54/100 no pool sem Nous) | 0/100 |
+| A13 | (herdado da V4) **Fallback no mesmo provedor do MAIN** — o −25 só valia entre fallbacks. | FB1 `gemini-4-argon` (Google) com MAIN `gemini-4-carbon` (Google) | 1 |
 
 Outros achados operacionais:
 - A10 — instalações que copiaram só os arquivos de seleção ficaram **sem `nvidia_official_free.py`**: a validação do badge oficial "Free Endpoint" da NVIDIA é pulada em todo ciclo (log: "módulo nvidia_official_free.py ausente"). A skill unificada inclui o módulo.
 - A11 — API da Artificial Analysis respondendo **HTTP 410**; o seletor usa cache antigo (14/53 modelos com benchmark).
 - A12 — `hermes auth status` mostra "logged in" para o ChatGPT mesmo com access token vencido; a V4 ignorava a fonte silenciosamente ("sem token válido"). Corrigido na V5 (motivo no log + renovação via Hermes).
 
-## 5. Recomendação
+## 5. Correções — seleção V5.2 (padrão a partir da 5.2.0)
+
+Base = funções de seleção da infraestrutura (score com AA + penalidade de confiabilidade,
+contexto em tokens, fórmulas por papel, −25 por provedor repetido), mais:
+
+| Achado | Correção |
+|---|---|
+| A1 | ordem total determinística: rotas e candidatos ordenados por `(model_id, source)` antes de todo `max()`/`sorted()` |
+| A2, A3, A4, A8 | `score_role` volta a ser o da infraestrutura (AA `AA_WEIGHT`, penalidade de confiabilidade, `_context` em tokens, fórmulas por papel) |
+| A5, A6 | rota da família escolhida pelo score do papel + bônus de provedor inédito + contexto |
+| A7, A13 | −25 para fallback em provedor repetido **e** no provedor do MAIN/MOA (cota esgotada derrubaria primário e fallback juntos) |
+| A9 | `canonical_family()` (remove `:free`, `@cf/` e sufixo de data `-20YYMMDD` do OpenRouter) na chave de família e em toda comparação |
+| — | bônus por provedor da V5.1 (`nvidia 2, nous 1.5, cloudflare 1, google 0.5`) mantido como preferência de rota |
+
+Rollback: `HERMES_V5_SELECTION=5.1` restaura a seleção V5.1 original (continua idêntica
+à antiga "integrated": pool real + 300 sintéticos, 0 divergências).
+
+Medição no mesmo fixture (55 modelos, 6 fontes), 100 embaralhamentos:
+
+| Métrica | V4 | V5.1 | **V5.2** |
+|---|---|---|---|
+| Seleções completas distintas | 3 | 78 | **1** |
+| Mesmo modelo em 2 papéis | 0 | 36 | **0** |
+| Fallback no provedor do MAIN | 1 | 0 | **0** |
+| MAIN troca quando fica instável (2 falhas + EMA 30 s) | sim | não | **sim** |
+| Papéis com benchmark AA | 2 | 1 | 2 |
+| Provedores distintos (de 6) | 4 | 5 | **6** |
+
+Testes: 28 em `tests/test_v5_unified.py` (V5.2 sem `expectedFailure`; a V5.1 mantém o
+seu como documentação do defeito).
+
+`--dry-run` real (rede + probes) da V5.2: rc 0; MAIN `gemini-4-carbon` (Google), MOA
+`tencent/hy4-flash` (Nous; o 1º MOA falhou no probe), fallbacks NVIDIA → Codex → Google.
+A penalidade A13 é suave (como a −25 da V4): o `gemini-4-argon` ficou como **FB3** porque,
+após a re-seleção do MOA, nenhuma alternativa long-context fora de Google/Nous chegou perto.
+Como é o último da cadeia, uma queda do Google ainda passa antes por NVIDIA e Codex.
+
+## 6. Recomendação original (antes da V5.2)
 
 A unificação é segura (equivalente comprovada). A **seleção V5.1 é inferior à V4 em
 determinismo e qualidade** (A1, A2, A9). Correção mínima sugerida, medível com o mesmo

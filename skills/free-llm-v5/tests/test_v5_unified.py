@@ -3,9 +3,9 @@
 
     python3 tests/test_v5_unified.py          # ou: python3 -m unittest discover tests
 
-Cobre: independência da V4, rebinds V5.1, golden de seleção (paridade com a antiga
-"V5 integrated"), invariantes de seleção, leitura/renovação do token ChatGPT/Codex
-e o wrapper de cron.
+Cobre: independência da V4, modos de seleção (5.2 padrão / 5.1 rollback), golden das
+duas (5.1 = paridade com a antiga "V5 integrated"), correções A1-A13 da auditoria,
+leitura/renovação do token ChatGPT/Codex e o wrapper de cron.
 """
 from __future__ import annotations
 
@@ -39,11 +39,13 @@ def _clean_env(home: Path) -> dict:
     return env
 
 
-def load_selector(home: Path, src_dir: Path = SCRIPTS, name: str = "sel_v5_test"):
-    """Importa o seletor com HERMES_HOME isolado (lido no import)."""
+def load_selector(home: Path, src_dir: Path = SCRIPTS, name: str = "sel_v5_test", mode: str = ""):
+    """Importa o seletor com HERMES_HOME isolado (lido no import). mode: '' (padrão 5.2) ou '5.1'."""
     saved = dict(os.environ)
     os.environ.clear()
     os.environ.update(_clean_env(home))
+    if mode:
+        os.environ["HERMES_V5_SELECTION"] = mode
     try:
         sys.path.insert(0, str(src_dir))
         spec = importlib.util.spec_from_file_location(name, src_dir / SELECTOR.name)
@@ -67,18 +69,20 @@ def jwt(exp_in: float, plan: str = "free", account: str = "acc-123") -> str:
 
 
 class Base(unittest.TestCase):
+    MODE = ""
+
     @classmethod
     def setUpClass(cls):
         cls.home = Path(tempfile.mkdtemp(prefix="t_v5_unified_"))
         (cls.home / "model-selector").mkdir()
-        cls.sel = load_selector(cls.home)
+        cls.sel = load_selector(cls.home, name=f"sel_v5_test_{cls.__name__}", mode=cls.MODE)
 
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.home, ignore_errors=True)
 
-    def pool(self):
-        self.sel._REL = {}
+    def pool(self, rel=None):
+        self.sel._REL = rel or {}
         self.sel._AA_STATUS = dict(FIXTURE["aa_status"])
         return copy.deepcopy(FIXTURE["models"])
 
@@ -92,6 +96,20 @@ class Base(unittest.TestCase):
         refs = s.choose_moa_references(models, fam | {f["_family"] for f in fbs}, src, 2,
                                        {s._vendor(main), s._vendor(moa)})
         return main, moa, fbs, refs
+
+    def ids(self, sel):
+        main, moa, fbs, refs = sel
+        return [(x["_model_id"], x["_source"]) for x in [main, moa] + fbs + refs]
+
+    def shuffled(self, seed):
+        import random
+        p = self.pool()
+        random.Random(seed).shuffle(p)
+        return p
+
+
+class Legacy(Base):
+    MODE = "5.1"
 
 
 class T1Standalone(Base):
@@ -113,28 +131,61 @@ class T1Standalone(Base):
         self.assertNotIn("spec_from_file_location", code)
 
 
-class T2Rebinds(Base):
-    def test_selection_functions_are_v51(self):
+class T2Modes(Base):
+    def test_default_is_v52(self):
         s = self.sel
-        self.assertIs(s.score_role, s._v51_score_role)
-        self.assertIs(s.choose_main, s._v51_choose_main)
-        self.assertIs(s.choose_moa, s._v51_choose_moa)
-        self.assertIs(s.choose_fallbacks, s._v51_choose_fallbacks)
-        self.assertIsNot(s._v4_score_role, s.score_role)
+        self.assertEqual(s.SELECTION_MODE, "5.2")
+        self.assertIs(s.score_role, s._v4_score_role)          # AA + confiabilidade (A2/A3)
+        self.assertIs(s.family_candidates, s._v52_family_candidates)
+        self.assertIs(s.best_route_for_family, s._v52_best_route_for_family)
+        self.assertIs(s.fallback_score, s._v52_fallback_score)
+        self.assertEqual(s.SOURCE_BONUS, s._V51_SOURCE_BONUS)
 
     def test_not_free_is_momentary(self):
         self.assertEqual(self.sel.NOT_FREE_TTL_S, 0)
 
-    def test_v51_constants_isolated_from_v4(self):
-        # A infra V4 continua usando o SOURCE_BONUS dela; a seleção V5.1, o próprio.
-        self.assertEqual(self.sel.SOURCE_BONUS["cloudflare"], 3.0)
-        self.assertEqual(self.sel._V51_SOURCE_BONUS["cloudflare"], 1.0)
+    def test_canonical_family(self):
+        c = self.sel.canonical_family
+        self.assertEqual(c("nvidia/nemotron-3-ultra-550b-a55b-20260604"), c("nvidia/nemotron-3-ultra-550b-a55b"))
+        self.assertEqual(c("nvidia/nemotron-3-ultra-550b-a55b:free"), "nvidia/nemotron-3-ultra-550b-a55b")
+        self.assertEqual(c("@cf/openai/gpt-oss-120b"), "openai/gpt-oss-120b")
+        self.assertNotEqual(c("openai/gpt-oss-120b"), c("openai/gpt-oss-20b"))
+        self.assertNotEqual(c("poolside/laguna-s-2.1"), c("poolside/laguna-xs-2.1"))
+        self.assertEqual(self.sel.family_key({"id": "x/model-a:free", "canonical_slug": "x/model-a-20260101"}),
+                         "x/model-a")
 
 
-class T3Golden(Base):
+class T2LegacyMode(Legacy):
+    def test_rollback_v51(self):
+        s = self.sel
+        self.assertEqual(s.SELECTION_MODE, "5.1")
+        self.assertIs(s.score_role, s._v51_score_role)
+        self.assertIs(s.choose_main, s._v51_choose_main)
+        self.assertIs(s.choose_moa, s._v51_choose_moa)
+        self.assertIs(s.choose_fallbacks, s._v51_choose_fallbacks)
+        self.assertEqual(s.SOURCE_BONUS["cloudflare"], 3.0)      # infra mantém a tabela dela
+
+
+class T3GoldenV52(Base):
+    def test_selection_matches_golden(self):
+        main, moa, fbs, refs = self.select(self.pool())
+        exp = FIXTURE["expected_v52"]
+        self.assertEqual(main["_model_id"], exp["main"])
+        self.assertEqual(moa["_model_id"], exp["moa"])
+        self.assertEqual([[f["_model_id"], f["_fallback_profile"]] for f in fbs], exp["fallbacks"])
+        self.assertEqual([r["_model_id"] for r in refs], exp["refs"])
+
+    def test_order_independent(self):
+        """A1 corrigido: a seleção COMPLETA não depende da ordem do catálogo."""
+        want = self.ids(self.select(self.pool()))
+        for seed in range(30):
+            self.assertEqual(self.ids(self.select(self.shuffled(seed))), want, f"seed={seed}")
+
+
+class T3GoldenLegacy(Legacy):
     def test_selection_matches_integrated_golden(self):
         main, moa, fbs, refs = self.select(self.pool())
-        exp = FIXTURE["expected"]
+        exp = FIXTURE["expected_v51"]
         self.assertEqual(main["_model_id"], exp["main"])
         self.assertEqual(moa["_model_id"], exp["moa"])
         self.assertEqual([[f["_model_id"], f["_fallback_profile"]] for f in fbs], exp["fallbacks"])
@@ -142,32 +193,51 @@ class T3Golden(Base):
 
     def test_score_role_matches_golden(self):
         pool = self.pool()
-        for key, want in FIXTURE["expected"]["score_role"].items():
+        for key, want in FIXTURE["expected_v51"]["score_role"].items():
             mid, src, role = key.split("|")
             m = next(x for x in pool if x["_model_id"] == mid and x["_source"] == src)
             self.assertAlmostEqual(self.sel.score_role(m, role), want, places=6, msg=key)
 
     @unittest.expectedFailure
-    def test_order_independent(self):
-        """DEFEITO CONHECIDO da seleção V5.1 (auditoria 2026-11-26, achado A1): empate
-        exato de _role_score (ex.: 79.69 x 79.69) é decidido pela ORDEM do catálogo, e
-        a rota dentro da família ignora a qualidade. 100 embaralhamentos do fixture ->
-        63 seleções completas distintas (V4: 2). Quando o algoritmo for corrigido este
-        teste passa e o expectedFailure deve sair."""
-        import random
-        a = self.select(self.pool())
-        for seed in range(5):
-            p = self.pool(); random.Random(seed).shuffle(p)
-            b = self.select(p)
-            self.assertEqual(a[0]["_model_id"], b[0]["_model_id"])
-            self.assertEqual([f["_model_id"] for f in a[2]], [f["_model_id"] for f in b[2]])
+    def test_order_independent_v51(self):
+        """Defeito A1 da V5.1 (mantida só como rollback): depende da ordem do catálogo."""
+        want = self.ids(self.select(self.pool()))
+        for seed in range(30):
+            self.assertEqual(self.ids(self.select(self.shuffled(seed))), want)
 
 
 class T4Invariants(Base):
-    def test_roles_never_repeat_family(self):
-        main, moa, fbs, refs = self.select(self.pool())
-        fams = [main["_family"], moa["_family"]] + [f["_family"] for f in fbs] + [r["_family"] for r in refs]
-        self.assertEqual(len(fams), len(set(fams)), fams)
+    def test_no_model_in_two_roles_across_providers(self):
+        """A9: mesma LLM via OpenRouter e NVIDIA não ocupa dois papéis."""
+        c = self.sel.canonical_family
+        for seed in range(30):
+            sel = self.select(self.shuffled(seed))
+            main, moa, fbs, refs = sel
+            fams = [c(x["_family"]) for x in [main, moa] + fbs + refs]
+            self.assertEqual(len(fams), len(set(fams)), (seed, fams))
+
+    def test_fallbacks_avoid_primary_and_repeated_providers(self):
+        """A7/A13: fallbacks em provedores diferentes entre si e do MAIN (há alternativas)."""
+        main, _, fbs, _ = self.select(self.pool())
+        srcs = [f["_source"] for f in fbs]
+        self.assertEqual(len(srcs), len(set(srcs)), srcs)
+        self.assertNotIn(main["_source"], srcs)
+
+    def test_uses_artificial_analysis(self):
+        """A2: com AA ativa, o MAIN é o de maior score AA-ponderado (não heurística pura)."""
+        pool = self.pool()
+        main = self.sel.choose_main(pool)
+        self.assertTrue(main.get("_aa"), main["_model_id"])
+        self.sel._AA_STATUS = {"used": False}
+        no_aa = [dict(m, _aa=None) for m in self.pool()]
+        self.sel._AA_STATUS = {"used": False}
+        self.assertNotEqual(self.sel.choose_main(no_aa)["_model_id"], main["_model_id"])
+
+    def test_reliability_changes_choice(self):
+        """A3: MAIN com falhas recentes + latência alta perde a vaga."""
+        main = self.sel.choose_main(self.pool())
+        rel = {self.sel._rel_key(main): {"fails": 2, "ema_ms": 30000}}
+        self.assertNotEqual(self.sel.choose_main(self.pool(rel=rel))["_model_id"], main["_model_id"])
 
     def test_fallback_count_and_profiles(self):
         _, _, fbs, _ = self.select(self.pool())

@@ -1,7 +1,7 @@
 ---
 name: free-llm-v5
 description: "Use when installing, running or auditing the free-LLM selector V5 (single file)."
-version: 2.0.0
+version: 2.1.0
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -47,8 +47,13 @@ perfil (com backup, probe e histórico).
 
 **Arquivo único:** `scripts/hermes-free-model-selector-v5.py` contém a infraestrutura
 operacional (ex-V4: fetchers, credenciais, warm-up, probe, persistência, backup,
-confiabilidade, restart do gateway) e a seleção por papel V5.1. Não depende de nenhum
+confiabilidade, restart do gateway) e a seleção por papel. Não depende de nenhum
 arquivo da V4 — a skill `free-llm` (V4) pode ser removida sem afetar esta.
+
+**Seleção V5.2 (padrão):** score com benchmark Artificial Analysis + penalidade de
+confiabilidade, família canônica entre provedores (a mesma LLM não ocupa dois papéis),
+resultado determinístico (não depende da ordem do catálogo) e fallbacks fora do provedor
+do MAIN/MOA. Rollback para a seleção V5.1 original: `HERMES_V5_SELECTION=5.1`.
 
 ## When to Use
 
@@ -63,8 +68,8 @@ arquivo da V4 — a skill `free-llm` (V4) pode ser removida sem afetar esta.
 - `scripts/run_model_selector_v5.py` — wrapper de cron: roda o seletor, salva o log
   completo em `<HERMES_HOME>/model-selector/last_run_v5.log` e imprime só MAIN/MOA/fallbacks.
   Exit codes: `0` ok, `1` seletor não encontrado, `3` seleção não confirmada, `124` timeout.
-- `tests/test_v5_unified.py` + `tests/fixtures/pool_20261126.json` — testes offline (22).
-- `references/V5_TEST_AUDIT.md` — auditoria de testes e defeitos conhecidos da seleção.
+- `tests/test_v5_unified.py` + `tests/fixtures/pool_20261126.json` — testes offline (28).
+- `references/V5_TEST_AUDIT.md` — auditoria de testes, defeitos A1-A13 e correções V5.2.
 - `references/V5_*.md` (demais) — documentação histórica do desenho "integrated".
 
 ## Uso
@@ -103,8 +108,9 @@ Sem API key: usa o login OAuth do Hermes (`hermes auth add openai-codex`).
   token na cópia e invalida o login original. Em sandbox/testes use `HERMES_CODEX_REFRESH=0`.
 - Variáveis `*_BASE_URL` no ambiente sobrescrevem endpoints; um valor errado (ex.: uma API key
   em `NOUS_BASE_URL`) quebra o probe com `unknown url type`.
-- A seleção V5.1 tem defeitos conhecidos (dependência da ordem do catálogo, AA e confiabilidade
-  ignoradas no score) — ver `references/V5_TEST_AUDIT.md` antes de alterar pesos.
+- Antes de mexer em pesos/bônus, meça com o fixture: 100 embaralhamentos devem dar
+  1 seleção, 0 modelos repetidos entre papéis e 0 fallbacks no provedor do MAIN
+  (`references/V5_TEST_AUDIT.md`, seção 5).
 
 ## Important
 
