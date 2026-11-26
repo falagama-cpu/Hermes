@@ -159,11 +159,39 @@ def _load_not_free() -> Dict[str, Any]:
     return {k: v for k, v in data.items() if now - v.get("ts", 0) < NOT_FREE_TTL_S}
 
 
+# V5.2.2 — R9: --dry-run é estritamente read-only. run() liga READ_ONLY antes de
+# qualquer I/O; todo escritor de arquivo operacional consulta _writes_blocked().
+READ_ONLY = False
+
+# V5.2.2 — R1: fail-closed. Rodada sem MAIN/MOA aprovado no probe é abortada antes de
+# gravar config/state/histórico e antes de qualquer restart.
+EXIT_USAGE = 2
+EXIT_SELECTION_ABORTED = 3
+PROBE_MAX_ATTEMPTS = 8
+# V5.2.2 — R2: teto de leitura do corpo do probe (max_tokens=8 => resposta pequena).
+PROBE_MAX_BODY = 64 * 1024
+
+
+class SelectionAborted(RuntimeError):
+    """Seleção não comprovada: nada é gravado, gateway não é reiniciado (exit 3)."""
+
+
+def _writes_blocked(what: str) -> bool:
+    """True (e não grava) quando a execução é read-only (--dry-run)."""
+    if READ_ONLY:
+        logging.debug("DRY-RUN read-only: %s não gravado.", what)
+        return True
+    return False
+
+
 def mark_not_free(model: Optional[Dict[str, Any]], reason: str) -> None:
     if not model:
         return
     data = _load_not_free()
     data[model["_model_id"]] = {"reason": reason, "ts": time.time()}
+    if _writes_blocked("not_free.json"):
+        logging.warning("NÃO-FREE (dry-run, não persistido): %s — %s", model["_model_id"], reason)
+        return
     NOT_FREE_FILE.parent.mkdir(parents=True, exist_ok=True)
     NOT_FREE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     ttl = f"por {NOT_FREE_TTL_S // 86400} dias" if NOT_FREE_TTL_S >= 86400 else "nesta rodada"
@@ -369,12 +397,10 @@ TEXT_GENERATION_TERMS = (
 # =============================================================================
 
 def setup_logging(verbose: bool) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-
-    handlers = [
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
+    handlers: List[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if not READ_ONLY:  # R9: dry-run não anexa ao selector.log
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        handlers.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
 
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -1262,8 +1288,9 @@ def nvidia_discover_free(raw_models: List[Dict[str, Any]], key: str) -> Set[str]
                 transient_kept.append(mid)
 
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        NVIDIA_PROBE_FILE.write_text(json.dumps(cache, indent=1), encoding="utf-8")
+        if not _writes_blocked("nvidia_free_probe.json"):
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            NVIDIA_PROBE_FILE.write_text(json.dumps(cache, indent=1), encoding="utf-8")
     except OSError:
         pass
 
@@ -1366,11 +1393,12 @@ def _get_official_free_ids(raw_models: List[Dict[str, Any]]) -> Optional[Set[str
             if not cards:
                 raise RuntimeError("catálogo oficial sem cards 'Free Endpoint'")
             try:
-                STATE_DIR.mkdir(parents=True, exist_ok=True)
-                NVIDIA_OFFICIAL_CATALOG_FILE.write_text(json.dumps({
-                    "fetched_at": time.time(),
-                    "cards": cards,
-                }, indent=1), encoding="utf-8")
+                if not _writes_blocked("nvidia_official_catalog.json"):
+                    STATE_DIR.mkdir(parents=True, exist_ok=True)
+                    NVIDIA_OFFICIAL_CATALOG_FILE.write_text(json.dumps({
+                        "fetched_at": time.time(),
+                        "cards": cards,
+                    }, indent=1), encoding="utf-8")
             except OSError:
                 pass
             logging.info(
@@ -1683,7 +1711,10 @@ def _codex_token() -> Optional[Tuple[str, Dict[str, str]]]:
     expirado, pede ao Hermes para renovar (HERMES_CODEX_REFRESH=1, padrão) e relê."""
     cands, notes = _codex_candidates()
     picked = _codex_pick(cands, notes)
-    if picked is None and cands and CODEX_REFRESH and _codex_refresh_via_hermes(cands, notes):
+    if picked is None and cands and CODEX_REFRESH and READ_ONLY:
+        # R9: `hermes auth refresh` reescreve auth.json — proibido em dry-run.
+        notes.append("refresh do token pulado (dry-run read-only)")
+    elif picked is None and cands and CODEX_REFRESH and _codex_refresh_via_hermes(cands, notes):
         cands, more = _codex_candidates()
         notes += more
         picked = _codex_pick(cands, notes)
@@ -1823,6 +1854,8 @@ def load_reliability() -> Dict[str, Any]:
 
 
 def save_reliability(rel: Dict[str, Any]) -> None:
+    if _writes_blocked("reliability.json"):
+        return
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         _atomic_write_text(
@@ -1944,6 +1977,8 @@ def build_catalog(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def write_catalog(models: List[Dict[str, Any]]) -> None:
     """Grava catalog.json + catalog.yaml ANTES da seleção (fonte de auditoria)."""
+    if _writes_blocked("catalog.json/catalog.yaml"):
+        return
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     catalog = build_catalog(models)
@@ -2746,6 +2781,9 @@ def atomic_write_yaml(
     data: Dict[str, Any],
 ) -> None:
 
+    if READ_ONLY:  # R9: nunca deve ser alcançado em dry-run
+        raise SelectionAborted("atomic_write_yaml chamado em modo read-only")
+
     content = yaml.safe_dump(
         data,
         allow_unicode=True,
@@ -2773,6 +2811,8 @@ def atomic_write_yaml(
 
 
 def backup_config() -> Path:
+    if READ_ONLY:  # R9: nunca deve ser alcançado em dry-run
+        raise SelectionAborted("backup_config chamado em modo read-only")
     timestamp = dt.datetime.now().strftime(
         "%Y%m%d-%H%M%S"
     )
@@ -2828,6 +2868,7 @@ def validate_final_selection(
     main: Dict[str, Any],
     moa: Optional[Dict[str, Any]],
     fallbacks: List[Dict[str, Any]],
+    moa_refs: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
 
     selected = [main]
@@ -2836,6 +2877,7 @@ def validate_final_selection(
         selected.append(moa)
 
     selected.extend(fallbacks)
+    selected.extend(moa_refs or [])  # V5.2.2 (R3): REF também é papel exclusivo
 
     families = [
         item["_family"]
@@ -2843,7 +2885,7 @@ def validate_final_selection(
     ]
 
     if len(families) != len(set(families)):
-        raise RuntimeError(
+        raise SelectionAborted(
             "VALIDAÇÃO FALHOU: mesma família de LLM aparece "
             "em mais de uma posição."
         )
@@ -2860,6 +2902,157 @@ def validate_final_selection(
             "Diversidade de fontes: %s",
             ", ".join(sources),
         )
+
+
+# -----------------------------------------------------------------------------
+# V5.2.2 — R3: exclusividade de papéis verificada no config RESULTANTE
+# -----------------------------------------------------------------------------
+
+def _entry_family(entry: Dict[str, Any], models: List[Dict[str, Any]]) -> str:
+    """Família canônica de uma entrada provider/model do config.yaml (mesma regra
+    family_key/canonical_family da V5.2; fora do pool, canonical_family do ID)."""
+    found = find_current(models, entry.get("model"), entry.get("provider"))
+    return found["_family"] if found else canonical_family(entry.get("model"))
+
+
+def config_roles(config: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    """(papel, entrada) de todos os papéis que o seletor grava no config.yaml."""
+    roles: List[Tuple[str, Dict[str, Any]]] = []
+    m = config.get("model") or {}
+    if isinstance(m, dict) and m.get("default"):
+        roles.append(("MAIN", {"model": m.get("default"), "provider": m.get("provider")}))
+    moa = config.get("moa") or {}
+    if isinstance(moa, dict):
+        agg = moa.get("aggregator")
+        if isinstance(agg, dict) and agg.get("model"):
+            roles.append(("MOA", agg))
+        for i, r in enumerate(moa.get("reference_models") or [], 1):
+            if isinstance(r, dict) and r.get("model"):
+                roles.append((f"REF{i}", r))
+    for i, f in enumerate(config.get("fallback_providers") or [], 1):
+        if isinstance(f, dict) and f.get("model"):
+            roles.append((f"FB{i}", f))
+    return roles
+
+
+def filter_preserved_refs(config: Dict[str, Any], models: List[Dict[str, Any]],
+                          rejected: Optional[Set[str]] = None) -> int:
+    """Sem refs novas, apply_config preserva as refs antigas: remove as que repetem
+    família de outro papel (ou entre si). V5.2.3: remove também as de família REPROVADA
+    nesta rodada (inclusive alias em outro provedor — o filtro é por família canônica) e as
+    que não estão no pool elegível atual (não-free, quarentena, não descobertas).
+    Devolve quantas restaram."""
+    rejected = rejected or set()
+    moa = config.get("moa") or {}
+    if not isinstance(moa, dict):
+        return 0
+    taken = {_entry_family(e, models) for role, e in config_roles(config)
+             if not role.startswith("REF")}
+    holders = [moa]
+    preset = (moa.get("presets") or {}).get("default") if isinstance(moa.get("presets"), dict) else None
+    if isinstance(preset, dict):
+        holders.append(preset)
+    kept_n = 0
+    for holder in holders:
+        refs = holder.get("reference_models")
+        if not isinstance(refs, list):
+            continue
+        kept, seen = [], set(taken)
+        for r in refs:
+            fam = _entry_family(r, models) if isinstance(r, dict) else None
+            eligible = isinstance(r, dict) and find_current(models, r.get("model"), r.get("provider")) is not None
+            why = ("família reprovada nesta rodada" if fam in rejected
+                   else "fora do pool elegível atual" if fam and not eligible
+                   else "repete outro papel" if not fam or fam in seen else None)
+            if why is None and fam:
+                kept.append(r)
+                seen.add(fam)
+            else:
+                logging.warning("MoA: reference preservada %s removida (%s).",
+                                (r or {}).get("model") if isinstance(r, dict) else r, why)
+        holder["reference_models"] = kept
+        kept_n = len(kept) if holder is moa else kept_n
+    return kept_n
+
+
+def preserve_legacy_fallbacks(config: Dict[str, Any], models: List[Dict[str, Any]],
+                              taken: Set[str], rejected: Set[str], need: int) -> List[Dict[str, Any]]:
+    """V5.2.3 (R1): completa os fallbacks aprovados com fallbacks JÁ configurados que não
+    foram testados nesta rodada, desde que: estejam no pool elegível atual (regras existentes:
+    free, fora de quarentena), não sejam de família reprovada nesta rodada e não repitam a
+    família de outro papel. Cada um é marcado `_legacy_untested` e listado no relatório."""
+    kept: List[Dict[str, Any]] = []
+    for e in config.get("fallback_providers") or []:
+        if len(kept) >= need:
+            break
+        if not isinstance(e, dict) or not e.get("model"):
+            continue
+        m = find_current(models, e.get("model"), e.get("provider"))
+        if m is None:
+            logging.warning("FALLBACK legado %s descartado: fora do pool elegível atual.", e.get("model"))
+            continue
+        if m["_family"] in rejected:
+            logging.warning("FALLBACK legado %s descartado: família reprovada nesta rodada.", e.get("model"))
+            continue
+        if m["_family"] in taken:
+            logging.warning("FALLBACK legado %s descartado: repete outro papel.", e.get("model"))
+            continue
+        legacy = dict(m, _legacy_untested=True)
+        kept.append(legacy)
+        taken.add(m["_family"])
+        _LEGACY_FALLBACKS.add(config_entry(m)["model"])
+        logging.warning("FALLBACK legado %s PRESERVADO sem probe nesta rodada (não reprovado).",
+                        m["_model_id"])
+    return kept
+
+
+def assert_role_exclusivity(config: Dict[str, Any], models: List[Dict[str, Any]]) -> None:
+    """Invariante final antes de gravar: nenhum papel repete a família de outro."""
+    seen: Dict[str, str] = {}
+    for role, entry in config_roles(config):
+        fam = _entry_family(entry, models)
+        if fam in seen:
+            raise SelectionAborted(
+                f"VALIDAÇÃO FALHOU: {role} ({entry.get('model')}) repete a família "
+                f"'{fam}' de {seen[fam]}."
+            )
+        seen[fam] = role
+
+
+def _role_summary(config: Dict[str, Any]) -> Dict[str, str]:
+    return {role: f"{e.get('model')} ({e.get('provider')})"
+            + (" [LEGADO NÃO TESTADO]" if role.startswith("FB") and e.get("model") in _LEGACY_FALLBACKS else "")
+            for role, e in config_roles(config)}
+
+
+def print_dry_run_report(current: Dict[str, Any], proposed: Optional[Dict[str, Any]],
+                         aborted: Optional[str] = None) -> None:
+    """R9: relatório do dry-run — só stdout, nada é gravado."""
+    print("\n" + "=" * 84)
+    print("DRY-RUN (read-only) — RESULTADO SIMULADO — nenhum arquivo foi gravado")
+    print("=" * 84)
+    if _PROBE_REJECTIONS:
+        print("Rejeitados no probe:")
+        for r in _PROBE_REJECTIONS:
+            print(f"  ✗ {r['model']} ({r['source']}): {r['reason']}")
+    else:
+        print("Rejeitados no probe: nenhum")
+    if _LEGACY_FALLBACKS:
+        print("Fallbacks LEGADOS preservados sem probe nesta rodada (não reprovados): "
+              + ", ".join(sorted(_LEGACY_FALLBACKS)))
+    if aborted:
+        print(f"RESULTADO: rodada seria ABORTADA (exit {EXIT_SELECTION_ABORTED}) — {aborted}")
+        print("config.yaml/state/histórico seriam preservados; gateway não seria reiniciado.")
+        return
+    cur, new = _role_summary(current), _role_summary(proposed or {})
+    print("Propostos (atual → proposto):")
+    changed = 0
+    for role in list(dict.fromkeys([*new, *cur])):
+        a, b = cur.get(role, "—"), new.get(role, "—")
+        changed += a != b
+        print(f"  {'=' if a == b else '→'} {role:5} {a}" + ("" if a == b else f"  →  {b}"))
+    print(f"RESULTADO: config.yaml {'SERIA ALTERADO (%d papéis)' % changed if changed else 'sem mudança'}; "
+          "restart e warm-up não executados.")
 
 
 def print_selection(
@@ -2913,6 +3106,8 @@ def load_state() -> Dict[str, Any]:
 
 
 def save_state(state: Dict[str, Any]) -> None:
+    if _writes_blocked("state.json"):
+        return
     STATE_DIR.mkdir(
         parents=True,
         exist_ok=True,
@@ -2929,6 +3124,8 @@ def save_state(state: Dict[str, Any]) -> None:
 
 
 def append_history(entry: Dict[str, Any]) -> None:
+    if _writes_blocked("history.jsonl"):
+        return
     STATE_DIR.mkdir(
         parents=True,
         exist_ok=True,
@@ -2963,6 +3160,7 @@ def serialize_model(
         "capabilities": model["_caps"],
         "fallback_profile": model.get("_fallback_profile"),
         "fallback_label": model.get("_fallback_label"),
+        "legacy_untested": bool(model.get("_legacy_untested")),  # V5.2.3
     }
 
 
@@ -2971,12 +3169,23 @@ def serialize_model(
 # =============================================================================
 
 def run(args: argparse.Namespace) -> int:
+    # R9 (V5.2.2): dry-run é read-only desde o primeiro I/O (inclusive o log).
+    global READ_ONLY
+    READ_ONLY = bool(args.dry_run)
+    _PROBE_REJECTIONS.clear()
+    _ROUND_REJECTED_FAMILIES.clear()
+    _LEGACY_FALLBACKS.clear()
     setup_logging(args.verbose)
     load_dotenv(ENV_FILE)
 
     logging.info(
         "=== Hermes Free Multi-Provider Selector ==="
     )
+
+    # R1 (V5.2.2): --skip-probe gravaria modelos nunca sondados; só é aceito em dry-run.
+    if args.skip_probe and not args.dry_run:
+        logging.error("--skip-probe só é permitido com --dry-run (fail-closed): nada foi alterado.")
+        return EXIT_USAGE
 
     # Carrega o tracker de confiabilidade (persistente): latência EMA + falhas
     # consecutivas por modelo, acumulados em execuções anteriores. Alimenta o
@@ -2987,7 +3196,7 @@ def run(args: argparse.Namespace) -> int:
     models = collect_models()
 
     if not models:
-        raise RuntimeError(
+        raise SelectionAborted(
             "Nenhuma LLM gratuita foi encontrada nas quatro fontes."
         )
 
@@ -3010,14 +3219,14 @@ def run(args: argparse.Namespace) -> int:
         )
 
     if not models:
-        raise RuntimeError(
+        raise SelectionAborted(
             "Todos os modelos elegíveis estão em quarentena por falhas repetidas."
         )
 
     # P1: grava catálogo auditável ANTES de qualquer seleção/alteração.
     # Anota benchmarks da Artificial Analysis (só nos modelos FREE já filtrados).
     global _AA_STATUS
-    _AA_STATUS = aa_scores.annotate(models, STATE_DIR)
+    _AA_STATUS = aa_scores.annotate(models, STATE_DIR, read_only=READ_ONLY)
     logging.info(
         "Artificial Analysis: %s | origem=%s | %d/%d modelos free com benchmark",
         "ATIVO" if _AA_STATUS["used"] else "INATIVO (heurística)",
@@ -3032,7 +3241,7 @@ def run(args: argparse.Namespace) -> int:
     main_candidate = choose_main(models)
 
     if not main_candidate:
-        raise RuntimeError(
+        raise SelectionAborted(
             "Não foi possível encontrar MAIN."
         )
 
@@ -3198,44 +3407,61 @@ def run(args: argparse.Namespace) -> int:
     dead_families: Set[str] = set()
 
     if not args.skip_probe:
-        # MAIN precisa responder; tenta re-selecionar até achar um vivo.
-        for _ in range(8):
+        # R1 (V5.2.2) FAIL-CLOSED: só um candidato APROVADO no probe vira MAIN.
+        # (V5.2.1: na 8ª reprovação o re-selecionado saía do laço sem probe.)
+        approved_main: Optional[Dict[str, Any]] = None
+        for attempt in range(1, PROBE_MAX_ATTEMPTS + 1):
             if probe_ok(final_main):
+                approved_main = final_main
                 break
             logging.warning(
-                "MAIN %s falhou no probe; re-selecionando.",
-                final_main["_model_id"],
+                "MAIN %s reprovado no probe (tentativa %d/%d).",
+                final_main["_model_id"], attempt, PROBE_MAX_ATTEMPTS,
             )
             dead_families.add(final_main["_family"])
+            if attempt == PROBE_MAX_ATTEMPTS:
+                break
             cand = choose_main(
                 [m for m in models if m["_family"] not in dead_families]
             )
             if not cand:
-                raise RuntimeError(
-                    "Nenhum MAIN válido respondeu ao probe."
-                )
+                break
             final_main = cand
+        if approved_main is None:
+            raise SelectionAborted(
+                f"nenhum MAIN aprovado no probe ({len(dead_families)} família(s) "
+                f"reprovada(s)); configuração anterior preservada."
+            )
+        final_main = approved_main
 
-        # MOA precisa responder e ser != MAIN.
+        # MOA precisa responder e ser != MAIN. Mesmo fail-closed (V5.2.1 seguia sem
+        # MoA dedicado e gravava aggregator = MAIN, ou um MOA nunca sondado).
         used = {final_main["_family"]}
         used_src = {final_main["_source"]}
-        for _ in range(8):
-            if final_moa and final_moa["_family"] not in used and probe_ok(final_moa):
+        approved_moa: Optional[Dict[str, Any]] = None
+        for attempt in range(1, PROBE_MAX_ATTEMPTS + 1):
+            if not final_moa:
                 break
-            if final_moa:
-                logging.warning(
-                    "MOA %s falhou no probe/conflito; re-selecionando.",
-                    final_moa["_model_id"],
-                )
-                dead_families.add(final_moa["_family"])
+            if final_moa["_family"] not in used and probe_ok(final_moa):
+                approved_moa = final_moa
+                break
+            logging.warning(
+                "MOA %s reprovado no probe/conflito (tentativa %d/%d).",
+                final_moa["_model_id"], attempt, PROBE_MAX_ATTEMPTS,
+            )
+            dead_families.add(final_moa["_family"])
+            if attempt == PROBE_MAX_ATTEMPTS:
+                break
             final_moa = choose_moa(
                 [m for m in models if m["_family"] not in dead_families],
                 used,
                 used_src,
             )
-            if not final_moa:
-                logging.warning("Sem MOA válido; seguindo sem MoA dedicado.")
-                break
+        if approved_moa is None:
+            raise SelectionAborted(
+                "nenhum MOA aprovado no probe; configuração anterior preservada."
+            )
+        final_moa = approved_moa
 
         # Recompõe famílias/fontes usadas e revalida os fallbacks um a um.
         final_used_families = {final_main["_family"]}
@@ -3286,15 +3512,33 @@ def run(args: argparse.Namespace) -> int:
 
         final_fallbacks = validated_fallbacks
 
+        # V5.2.3 (R1): zero fallbacks aprovados => aborta. Nunca troca a camada de fallback
+        # existente por uma lista vazia (antes do backup e de qualquer gravação/restart).
+        if FALLBACK_COUNT > 0 and not final_fallbacks:
+            raise SelectionAborted(
+                f"nenhum fallback aprovado no probe ({len(_ROUND_REJECTED_FAMILIES)} família(s) "
+                f"reprovada(s) na rodada); configuração anterior preservada."
+            )
+        # Vagas restantes: fallbacks legados não testados e não reprovados (regra aprovada).
+        if len(final_fallbacks) < FALLBACK_COUNT:
+            taken = set(final_used_families) | {f["_family"] for f in final_fallbacks}
+            final_fallbacks = final_fallbacks + preserve_legacy_fallbacks(
+                config, models, taken, set(_ROUND_REJECTED_FAMILIES),
+                FALLBACK_COUNT - len(final_fallbacks),
+            )
+            logging.info("Fallbacks: %d aprovado(s) no probe + %d legado(s) não testado(s) (de %d).",
+                         len(validated_fallbacks), len(final_fallbacks) - len(validated_fallbacks),
+                         FALLBACK_COUNT)
+
     # -------------------------------------------------------------------------
     # MOA REFERENCE MODELS — v4 é o único escritor (substitui update_models.py).
-    # Famílias distintas de MAIN/aggregator; não excluímos famílias dos
-    # fallbacks (papéis distintos; o pool free não comporta exclusão total).
+    # V5.2.2 (R3): famílias distintas de MAIN, aggregator E fallbacks — nenhum papel
+    # repete outro. Pool insuficiente => menos refs (nunca duplicata).
     # -------------------------------------------------------------------------
     final_moa_refs: List[Dict[str, Any]] = []
     if MOA_REFERENCE_COUNT > 0:
         ref_dead: Set[str] = set(dead_families)
-        ref_used_fam = {final_main["_family"]}
+        ref_used_fam = {final_main["_family"]} | {f["_family"] for f in final_fallbacks}
         ref_used_src = {final_main["_source"]}
         if final_moa:
             ref_used_fam.add(final_moa["_family"])
@@ -3324,10 +3568,13 @@ def run(args: argparse.Namespace) -> int:
                         ref["_model_id"],
                     )
                     ref_dead.add(ref["_family"])
+                    _ROUND_REJECTED_FAMILIES.add(ref["_family"])
         if len(final_moa_refs) < MOA_REFERENCE_COUNT:
             logging.warning(
-                "MoA: só %d/%d reference models válidos.",
+                "MoA: só %d/%d reference models válidos e exclusivos "
+                "(pool: %d famílias livres após MAIN/MOA/fallbacks).",
                 len(final_moa_refs), MOA_REFERENCE_COUNT,
+                len({m["_family"] for m in models} - ref_used_fam - ref_dead),
             )
         for i, ref in enumerate(final_moa_refs, 1):
             logging.info(
@@ -3339,6 +3586,7 @@ def run(args: argparse.Namespace) -> int:
         final_main,
         final_moa,
         final_fallbacks,
+        final_moa_refs,
     )
 
     print_selection(
@@ -3349,53 +3597,65 @@ def run(args: argparse.Namespace) -> int:
     )
 
     # -------------------------------------------------------------------------
-    # DRY RUN
+    # CONFIG PROPOSTO (calculado também em dry-run, para o relatório/diff)
+    # -------------------------------------------------------------------------
+
+    new_config = apply_config(
+        config,
+        final_main,
+        final_moa,
+        final_fallbacks,
+        final_moa_refs,
+    )
+    if not final_moa_refs:
+        # apply_config preserva as refs antigas: R3 remove as que repetem outro papel.
+        kept = filter_preserved_refs(new_config, models, set(_ROUND_REJECTED_FAMILIES))
+        logging.warning("MoA: nenhuma ref nova; %d ref(s) preservada(s) exclusiva(s).", kept)
+    # R3: invariante sobre o que SERIA gravado (MAIN/MOA/REF/FB).
+    assert_role_exclusivity(new_config, models)
+
+    # Validação YAML antes de qualquer alteração.
+    yaml.safe_dump(
+        new_config,
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+    # -------------------------------------------------------------------------
+    # DRY RUN — R9: nada gravado; relatório no terminal
     # -------------------------------------------------------------------------
 
     if args.dry_run:
+        print_dry_run_report(config, new_config)
         logging.info(
-            "DRY-RUN: config.yaml não será alterado."
+            "DRY-RUN: nenhum arquivo foi alterado (config, state, catálogo, histórico, backups)."
         )
-    else:
-        new_config = apply_config(
-            config,
-            final_main,
-            final_moa,
-            final_fallbacks,
-            final_moa_refs,
-        )
+        return 0
 
-        # Validação YAML antes de qualquer alteração.
-        yaml.safe_dump(
+    backup = backup_config()
+
+    try:
+        atomic_write_yaml(
+            CONFIG_FILE,
             new_config,
-            allow_unicode=True,
-            sort_keys=False,
         )
-
-        backup = backup_config()
-
-        try:
-            atomic_write_yaml(
-                CONFIG_FILE,
-                new_config,
-            )
-        except Exception:
-            logging.exception(
-                "Falha na gravação; restaurando backup."
-            )
-            shutil.copy2(
-                backup,
-                CONFIG_FILE,
-            )
-            raise
-
-        logging.info(
-            "config.yaml atualizado."
+    except Exception:
+        logging.exception(
+            "Falha na gravação; restaurando backup."
         )
-        logging.info(
-            "Backup criado: %s",
+        shutil.copy2(
             backup,
+            CONFIG_FILE,
         )
+        raise
+
+    logging.info(
+        "config.yaml atualizado."
+    )
+    logging.info(
+        "Backup criado: %s",
+        backup,
+    )
 
     # -------------------------------------------------------------------------
     # P4 — RESTART + WARM-UP (apenas fora de dry-run)
@@ -3611,6 +3871,100 @@ def _resolve_key(model: Dict[str, Any]) -> Optional[str]:
 # mesma execução em vez de gastar outra requisição da cota.
 _PROBE_CACHE: Dict[str, Dict[str, Any]] = {}
 
+# V5.2.2 (R9): reprovações desta rodada (modelo, fonte, motivo) para o relatório.
+_PROBE_REJECTIONS: List[Dict[str, Any]] = []
+# V5.2.3 (R1): famílias reprovadas em QUALQUER probe desta rodada (429, 402, 5xx, timeout,
+# conexão, 200 inválido, exceção, sem credencial...). Nunca são preservadas como legado.
+_ROUND_REJECTED_FAMILIES: Set[str] = set()
+# V5.2.3 (R1): modelos (nome no config) de fallbacks legados preservados SEM probe nesta rodada.
+_LEGACY_FALLBACKS: Set[str] = set()
+
+
+def _short(value: Any, n: int = 120) -> str:
+    text = value.get("message") or value if isinstance(value, dict) else value
+    return str(text)[:n]
+
+
+def _has_text(value: Any, _depth: int = 0) -> bool:
+    """Conteúdo utilizável (não basta o campo existir): str não vazia, lista de partes, ou
+    blocos com text/thinking/summary/content/refusal — inclusive aninhados (V5.2.3: blocos
+    `thinking` da DeepSeek, `thinking` em array da Mistral, `reasoning_details` da OpenRouter)."""
+    if _depth > 4:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_text(p, _depth + 1) for p in value)
+    if isinstance(value, dict):
+        return any(_has_text(value.get(k), _depth + 1)
+                   for k in ("text", "thinking", "summary", "content", "refusal"))
+    return False
+
+
+def validate_chat_completion(raw: bytes) -> Tuple[bool, str]:
+    """R2 (V5.2.2): valida o corpo de um HTTP 200 de POST /chat/completions.
+
+    Formato único efetivamente usado pelo probe: OpenAI chat.completion — OpenRouter,
+    Nous, Cloudflare (/ai/v1), NVIDIA NIM e Google (/v1beta/openai). O Codex não faz
+    ping (cota via /wham/usage) e não passa aqui. Retorna (ok, motivo)."""
+    if not raw or not raw.strip():
+        return False, "corpo vazio"
+    if len(raw) > PROBE_MAX_BODY:
+        return False, f"corpo maior que {PROBE_MAX_BODY} bytes"
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False, "JSON inválido"
+    if not isinstance(data, dict):
+        return False, "JSON não é objeto"
+    if data.get("error"):
+        return False, f"erro dentro de HTTP 200: {_short(data['error'])}"
+    if data.get("success") is False or data.get("errors"):
+        return False, f"erro dentro de HTTP 200 (envelope Cloudflare): {_short(data.get('errors'))}"
+    obj = data.get("object")
+    if obj is not None and obj != "chat.completion":
+        return False, f"objeto incompatível com /chat/completions: {_short(obj, 40)}"
+    choices = data.get("choices")
+    if "detail" in data and not choices:
+        return False, f"erro dentro de HTTP 200: {_short(data['detail'])}"
+    if not isinstance(choices, list) or not choices:
+        return False, "sem choices"
+    c0 = choices[0]
+    if not isinstance(c0, dict):
+        return False, "choice não é objeto"
+    if c0.get("error") or c0.get("finish_reason") == "error":
+        return False, f"erro no choice: {_short(c0.get('error') or 'finish_reason=error')}"
+    msg = c0.get("message")
+    if not isinstance(msg, dict):
+        return False, "choice sem message (formato incompatível)"
+    # V5.2.3: reasoning_details (OpenRouter) e refusal (recusa = endpoint e modelo funcionando).
+    for field in ("content", "reasoning_content", "reasoning", "reasoning_details", "refusal"):
+        if _has_text(msg.get(field)):
+            return True, field
+    if isinstance(msg.get("tool_calls"), list) and msg["tool_calls"]:
+        return True, "tool_calls"
+    if c0.get("finish_reason") == "length":
+        # Modelo de raciocínio truncado por max_tokens=8. V5.2.3: sem usage => aceito (a
+        # ausência de usage não invalida); com usage, reprova só se ele DECLARA 0 tokens.
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return True, "finish_reason=length (sem usage)"
+        details = usage.get("completion_tokens_details")
+        counts = [usage.get("completion_tokens"),
+                  details.get("reasoning_tokens") if isinstance(details, dict) else None]
+        counts = [c for c in counts if isinstance(c, int) and not isinstance(c, bool)]
+        if not counts:
+            return True, "finish_reason=length (usage sem contagem)"
+        if sum(c for c in counts if c > 0) > 0:
+            return True, "finish_reason=length com tokens gerados"
+        # B1 fix: também aceitar se total_tokens > prompt_tokens (evidência de geração)
+        total = usage.get("total_tokens")
+        prompt = usage.get("prompt_tokens")
+        if isinstance(total, int) and isinstance(prompt, int) and total > prompt:
+            return True, "finish_reason=length (total_tokens > prompt_tokens)"
+        return False, "finish_reason=length com usage declarando 0 tokens"
+    return False, "sem conteúdo inferencial"
+
 
 def warmup_model(
     label: str,
@@ -3671,10 +4025,12 @@ def warmup_model(
     )
 
     start = time.monotonic()
+    raw_body = b""
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            _ = resp.read(256)
             status = resp.status
+            # R2: lê no máximo PROBE_MAX_BODY+1 bytes (detecta excesso sem consumir tudo).
+            raw_body = resp.read(PROBE_MAX_BODY + 1) or b""
     except urllib.error.HTTPError as exc:
         status = exc.code  # 429 = existe/no ar, só limitado
         try:
@@ -3752,6 +4108,14 @@ def warmup_model(
         ok = False
     else:
         ok = status == 200 or (status == 429 and is_quota_429)
+    if ok and status == 200:
+        # R2 (V5.2.2): HTTP 200 só aprova com corpo de inferência válido.
+        valid, why = validate_chat_completion(raw_body)
+        if not valid:
+            ok = False
+            result["invalid_body"] = True
+            result["reason"] = f"HTTP 200 com corpo inválido: {why}"
+            logging.warning("Warm-up %s (%s): %s", label, entry["model"], result["reason"])
     result.update(ok=ok, http_status=status, latency_ms=latency_ms)
     if model["_source"] == "google" and label == "probe":
         _PROBE_CACHE[model["_model_id"]] = dict(result)
@@ -3793,8 +4157,18 @@ def probe_ok(model: Optional[Dict[str, Any]]) -> bool:
     if not model:
         return False
     # Google: thinking model + free tier pode passar de 15s.
-    res = warmup_model("probe", model, timeout_s=30 if model["_source"] == "google" else 15)
+    try:
+        res = warmup_model("probe", model, timeout_s=30 if model["_source"] == "google" else 15)
+    except Exception as exc:  # R1 (V5.2.2): exceção inesperada = reprovação (fail-closed)
+        logging.warning("Probe %s: exceção %s — reprovado.", model.get("_model_id"), type(exc).__name__)
+        res = {"ok": False, "reason": f"exceção no probe: {type(exc).__name__}"}
     ok = bool(res.get("ok"))
+    if not ok:
+        _ROUND_REJECTED_FAMILIES.add(model["_family"])
+        _PROBE_REJECTIONS.append({
+            "model": model.get("_model_id"), "source": model.get("_source"),
+            "reason": res.get("reason") or f"HTTP {res.get('http_status')}",
+        })
     # Cota diária gasta não é falha do modelo: não acumula rumo à quarentena.
     if not res.get("quota_exhausted"):
         record_reliability(_REL, model, ok=ok, latency_ms=res.get("latency_ms"))
@@ -4137,7 +4511,7 @@ else:
     # score_role, choose_main, choose_moa, choose_moa_references, choose_fallbacks e
     # fallback_score: implementações da infraestrutura, que chamam as globais acima.
 
-SELECTOR_VERSION = "5.2.1"
+SELECTOR_VERSION = "5.2.3"
 
 
 def main() -> int:
@@ -4158,7 +4532,8 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Calcula e mostra a seleção sem alterar o config.yaml.",
+        help="Read-only: calcula e mostra a seleção (propostos, rejeitados, diff) "
+             "sem gravar NENHUM arquivo nem reiniciar nada.",
     )
 
     parser.add_argument(
@@ -4176,7 +4551,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-probe",
         action="store_true",
-        help="Pula a validação por probe antes de gravar (NÃO recomendado).",
+        help="Pula o probe. Só permitido com --dry-run (V5.2.2, fail-closed).",
     )
 
     parser.add_argument(
@@ -4204,6 +4579,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 130
+    except SelectionAborted as exc:
+        # R1 (V5.2.2): fail-closed — nada gravado, gateway intacto, causa explícita.
+        logging.error("SELEÇÃO ABORTADA (exit %d): %s", EXIT_SELECTION_ABORTED, exc)
+        if READ_ONLY:
+            print_dry_run_report({}, None, aborted=str(exc))
+        return EXIT_SELECTION_ABORTED
     except Exception as exc:
         logging.exception(
             "ERRO FATAL: %s",
