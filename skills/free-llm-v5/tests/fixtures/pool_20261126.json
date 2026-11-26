@@ -1,0 +1,1068 @@
+{
+ "captured": "2026-11-26",
+ "aa_status": {
+  "used": true
+ },
+ "models": [
+  {
+   "_model_id": "inclusionai/ling-3.2-flash:free",
+   "_source": "openrouter",
+   "_family": "inclusionai/ling-3.2-flash-20261113",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 52.0,
+    "tools": 60.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "inclusionai/ling-3.2-flash:free",
+   "name": "inclusionAI: Ling 3.2 Flash (free)"
+  },
+  {
+   "_model_id": "baidu/ernie-5.5-flash-preview:free",
+   "_source": "openrouter",
+   "_family": "baidu/ernie-5.5-flash-20261110",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 1024000,
+   "id": "baidu/ernie-5.5-flash-preview:free",
+   "name": "Baidu: ERNIE-5.5-Flash-Preview (free)"
+  },
+  {
+   "_model_id": "liquid/lfm-3-1.7b:free",
+   "_source": "openrouter",
+   "_family": "liquid/lfm-3-1.7b-20261106",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 62.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 262144,
+   "id": "liquid/lfm-3-1.7b:free",
+   "name": "LiquidAI: LFM3-1.7B (free)"
+  },
+  {
+   "_model_id": "recursive/flint-v1.0:free",
+   "_source": "openrouter",
+   "_family": "recursive/flint-v1.0-20261021",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 62.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 262144,
+   "id": "recursive/flint-v1.0:free",
+   "name": "Recursive: Flint (free)"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3.5-lightning:free",
+   "_source": "openrouter",
+   "_family": "nvidia/nemotron-3.5-lightning-20260807",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 9.2,
+    "coding": 9.2,
+    "agentic": 9.2,
+    "aa_name": "Nemotron 3.5 Lightning"
+   },
+   "_context": 1000000,
+   "id": "nvidia/nemotron-3.5-lightning:free",
+   "name": "NVIDIA: Nemotron 3.5 Lightning (free)"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+   "_source": "openrouter",
+   "_family": "nvidia/nemotron-3-ultra-550b-a55b-20260604",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 82.0,
+    "tools": 82.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 19.7,
+    "coding": 19.7,
+    "agentic": 19.7,
+    "aa_name": "Nemotron 3 Ultra 550B A55B (Reasoning)"
+   },
+   "_context": 1000000,
+   "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+   "name": "NVIDIA: Nemotron 3 Ultra (free)"
+  },
+  {
+   "_model_id": "google/lyria-3-pro-preview",
+   "_source": "openrouter",
+   "_family": "google/lyria-3-pro-20260330",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "google/lyria-3-pro-preview",
+   "name": "Google: Lyria 3 Pro Preview"
+  },
+  {
+   "_model_id": "google/lyria-3-clip-preview",
+   "_source": "openrouter",
+   "_family": "google/lyria-3-clip-20260330",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "google/lyria-3-clip-preview",
+   "name": "Google: Lyria 3 Clip Preview"
+  },
+  {
+   "_model_id": "openrouter/free",
+   "_source": "openrouter",
+   "_family": "openrouter",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 52.0,
+    "tools": 60.0,
+    "long_context": 57.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 200000,
+   "id": "openrouter/free",
+   "name": "Free Models Router"
+  },
+  {
+   "_model_id": "@cf/openai/gpt-oss-120b",
+   "_source": "cloudflare",
+   "_family": "@cf/openai/gpt-oss-120b",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/openai/gpt-oss-120b",
+   "name": "@cf/openai/gpt-oss-120b"
+  },
+  {
+   "_model_id": "@cf/cloudflare/clairic-flash",
+   "_source": "cloudflare",
+   "_family": "@cf/cloudflare/clairic-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 0,
+   "id": "@cf/cloudflare/clairic-flash",
+   "name": "@cf/cloudflare/clairic-flash"
+  },
+  {
+   "_model_id": "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+   "_source": "cloudflare",
+   "_family": "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+   "name": "@cf/mistral/mistral-7b-instruct-v0.2-lora"
+  },
+  {
+   "_model_id": "@cf/utter-project/eurollm-9b-it",
+   "_source": "cloudflare",
+   "_family": "@cf/utter-project/eurollm-9b-it",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 0,
+   "id": "@cf/utter-project/eurollm-9b-it",
+   "name": "@cf/utter-project/eurollm-9b-it"
+  },
+  {
+   "_model_id": "@cf/zai-org/glm-4.7-flash",
+   "_source": "cloudflare",
+   "_family": "@cf/zai-org/glm-4.7-flash",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/zai-org/glm-4.7-flash",
+   "name": "@cf/zai-org/glm-4.7-flash"
+  },
+  {
+   "_model_id": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+   "_source": "cloudflare",
+   "_family": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+   "name": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+  },
+  {
+   "_model_id": "@cf/ibm-granite/granite-4.0-h-micro",
+   "_source": "cloudflare",
+   "_family": "@cf/ibm-granite/granite-4.0-h-micro",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 30.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 0,
+   "id": "@cf/ibm-granite/granite-4.0-h-micro",
+   "name": "@cf/ibm-granite/granite-4.0-h-micro"
+  },
+  {
+   "_model_id": "@cf/cloudflare/clairic",
+   "_source": "cloudflare",
+   "_family": "@cf/cloudflare/clairic",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 0,
+   "id": "@cf/cloudflare/clairic",
+   "name": "@cf/cloudflare/clairic"
+  },
+  {
+   "_model_id": "@cf/swiss-ai/apertus-v1.5-8b",
+   "_source": "cloudflare",
+   "_family": "@cf/swiss-ai/apertus-v1.5-8b",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 50.0
+   },
+   "_context": 0,
+   "id": "@cf/swiss-ai/apertus-v1.5-8b",
+   "name": "@cf/swiss-ai/apertus-v1.5-8b"
+  },
+  {
+   "_model_id": "@cf/qwen/qwen2.5-coder-32b-instruct",
+   "_source": "cloudflare",
+   "_family": "@cf/qwen/qwen2.5-coder-32b-instruct",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/qwen/qwen2.5-coder-32b-instruct",
+   "name": "@cf/qwen/qwen2.5-coder-32b-instruct"
+  },
+  {
+   "_model_id": "@cf/google/gemma-4-26b-a4b-it",
+   "_source": "cloudflare",
+   "_family": "@cf/google/gemma-4-26b-a4b-it",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/google/gemma-4-26b-a4b-it",
+   "name": "@cf/google/gemma-4-26b-a4b-it"
+  },
+  {
+   "_model_id": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+   "_source": "cloudflare",
+   "_family": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 50.0
+   },
+   "_context": 128000,
+   "id": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+   "name": "@cf/mistralai/mistral-small-3.1-24b-instruct"
+  },
+  {
+   "_model_id": "@cf/daily-co/phonellm-mini-alpha-2",
+   "_source": "cloudflare",
+   "_family": "@cf/daily-co/phonellm-mini-alpha-2",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 0,
+   "id": "@cf/daily-co/phonellm-mini-alpha-2",
+   "name": "@cf/daily-co/phonellm-mini-alpha-2"
+  },
+  {
+   "_model_id": "@cf/qwen/qwen3.8-27b",
+   "_source": "cloudflare",
+   "_family": "@cf/qwen/qwen3.8-27b",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 50.0
+   },
+   "_aa": {
+    "intel": 33.5,
+    "coding": 33.5,
+    "agentic": 33.5,
+    "aa_name": "Qwen3.8 27B (Xhigh)"
+   },
+   "_context": 128000,
+   "id": "@cf/qwen/qwen3.8-27b",
+   "name": "@cf/qwen/qwen3.8-27b"
+  },
+  {
+   "_model_id": "@cf/openai/gpt-oss-20b",
+   "_source": "cloudflare",
+   "_family": "@cf/openai/gpt-oss-20b",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "@cf/openai/gpt-oss-20b",
+   "name": "@cf/openai/gpt-oss-20b"
+  },
+  {
+   "_model_id": "@cf/moondream/moondream3.1-9B-A2B",
+   "_source": "cloudflare",
+   "_family": "@cf/moondream/moondream3.1-9b-a2b",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 50.0
+   },
+   "_context": 0,
+   "id": "@cf/moondream/moondream3.1-9B-A2B",
+   "name": "@cf/moondream/moondream3.1-9B-A2B"
+  },
+  {
+   "_model_id": "@cf/meta/llama-4-scout-17b-16e-instruct",
+   "_source": "cloudflare",
+   "_family": "@cf/meta/llama-4-scout-17b-16e-instruct",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 50.0
+   },
+   "_context": 128000,
+   "id": "@cf/meta/llama-4-scout-17b-16e-instruct",
+   "name": "@cf/meta/llama-4-scout-17b-16e-instruct"
+  },
+  {
+   "_model_id": "minimaxai/minimax-m3.1-flash",
+   "_source": "nvidia",
+   "_family": "minimaxai/minimax-m3.1-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 48.5,
+    "coding": 48.5,
+    "agentic": 48.5,
+    "aa_name": "MiniMax-M3.1-Flash"
+   },
+   "_context": 0,
+   "id": "minimaxai/minimax-m3.1-flash"
+  },
+  {
+   "_model_id": "mistralai/mistral-large-4-1t-a52b",
+   "_source": "nvidia",
+   "_family": "mistralai/mistral-large-4-1t-a52b",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 50.0,
+    "general": 65.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "mistralai/mistral-large-4-1t-a52b"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+   "_source": "nvidia",
+   "_family": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3-ultra-550b-a55b",
+   "_source": "nvidia",
+   "_family": "nvidia/nemotron-3-ultra-550b-a55b",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 19.7,
+    "coding": 19.7,
+    "agentic": 19.7,
+    "aa_name": "Nemotron 3 Ultra 550B A55B (Reasoning)"
+   },
+   "_context": 1000000,
+   "id": "nvidia/nemotron-3-ultra-550b-a55b"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3.5-bolt-e4b",
+   "_source": "nvidia",
+   "_family": "nvidia/nemotron-3.5-bolt-e4b",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "nvidia/nemotron-3.5-bolt-e4b"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3.5-lightning-30b-a3b",
+   "_source": "nvidia",
+   "_family": "nvidia/nemotron-3.5-lightning-30b-a3b",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1000000,
+   "id": "nvidia/nemotron-3.5-lightning-30b-a3b"
+  },
+  {
+   "_model_id": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+   "_source": "nvidia",
+   "_family": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 50.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 128000,
+   "id": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+  },
+  {
+   "_model_id": "poolside/laguna-xs-2.1",
+   "_source": "nvidia",
+   "_family": "poolside/laguna-xs-2.1",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 73.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 57.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 256000,
+   "id": "poolside/laguna-xs-2.1"
+  },
+  {
+   "_model_id": "stepfun-ai/step-5-preview",
+   "_source": "nvidia",
+   "_family": "stepfun-ai/step-5",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 30.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 47.5,
+    "coding": 47.5,
+    "agentic": 47.5,
+    "aa_name": "Step 5 Preview"
+   },
+   "_context": 0,
+   "id": "stepfun-ai/step-5-preview"
+  },
+  {
+   "_model_id": "gemini-2.5-flash",
+   "_source": "google",
+   "_family": "gemini-2.5-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 50.0
+   },
+   "_context": 1048576,
+   "id": "gemini-2.5-flash",
+   "name": "Gemini 2.5 Flash"
+  },
+  {
+   "_model_id": "gemini-2.5-flash-lite",
+   "_source": "google",
+   "_family": "gemini-2.5-flash-lite",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-2.5-flash-lite",
+   "name": "Gemini 2.5 Flash-Lite"
+  },
+  {
+   "_model_id": "gemini-3-flash-preview",
+   "_source": "google",
+   "_family": "gemini-3-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-3-flash-preview",
+   "name": "Gemini 3 Flash Preview"
+  },
+  {
+   "_model_id": "gemini-3.1-pro-preview",
+   "_source": "google",
+   "_family": "gemini-3.1-pro",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-3.1-pro-preview",
+   "name": "Gemini 3.1 Pro Preview"
+  },
+  {
+   "_model_id": "gemini-3.1-flash-lite-preview",
+   "_source": "google",
+   "_family": "gemini-3.1-flash-lite",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 10.3,
+    "coding": 10.3,
+    "agentic": 10.3,
+    "aa_name": "Gemini 3.1 Flash-Lite"
+   },
+   "_context": 1048576,
+   "id": "gemini-3.1-flash-lite-preview",
+   "name": "Gemini 3.1 Flash Lite Preview"
+  },
+  {
+   "_model_id": "gemini-3.1-flash-lite",
+   "_source": "google",
+   "_family": "gemini-3.1-flash-lite",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 10.3,
+    "coding": 10.3,
+    "agentic": 10.3,
+    "aa_name": "Gemini 3.1 Flash-Lite"
+   },
+   "_context": 1048576,
+   "id": "gemini-3.1-flash-lite",
+   "name": "Gemini 3.1 Flash Lite"
+  },
+  {
+   "_model_id": "gemini-3.5-flash",
+   "_source": "google",
+   "_family": "gemini-3.5-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-3.5-flash",
+   "name": "Gemini 3.5 Flash"
+  },
+  {
+   "_model_id": "gemini-3.5-flash-lite",
+   "_source": "google",
+   "_family": "gemini-3.5-flash-lite",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 19.5,
+    "coding": 19.5,
+    "agentic": 19.5,
+    "aa_name": "Gemini 3.5 Flash-Lite"
+   },
+   "_context": 1048576,
+   "id": "gemini-3.5-flash-lite",
+   "name": "Gemini 3.5 Flash Lite"
+  },
+  {
+   "_model_id": "gemini-3.6-flash",
+   "_source": "google",
+   "_family": "gemini-3.6-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-3.6-flash",
+   "name": "Gemini 3.6 Flash"
+  },
+  {
+   "_model_id": "gemini-3.7-flash",
+   "_source": "google",
+   "_family": "gemini-3.7-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-3.7-flash",
+   "name": "Gemini 3.7 Flash"
+  },
+  {
+   "_model_id": "gemini-3.8-flash",
+   "_source": "google",
+   "_family": "gemini-3.8-flash",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 51.3,
+    "coding": 51.3,
+    "agentic": 51.3,
+    "aa_name": "Gemini 3.8 Flash (High)"
+   },
+   "_context": 1048576,
+   "id": "gemini-3.8-flash",
+   "name": "Gemini 3.8 Flash"
+  },
+  {
+   "_model_id": "gemini-4-argon",
+   "_source": "google",
+   "_family": "gemini-4-argon",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 84.0,
+    "coding": 84.0,
+    "agentic": 84.0,
+    "aa_name": "Gemini 4 Argon (High)"
+   },
+   "_context": 1048576,
+   "id": "gemini-4-argon",
+   "name": "Gemini 4 Argon"
+  },
+  {
+   "_model_id": "gemini-4-carbon",
+   "_source": "google",
+   "_family": "gemini-4-carbon",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 100.0,
+    "coding": 100.0,
+    "agentic": 100.0,
+    "aa_name": "Gemini 4 Carbon (High)"
+   },
+   "_context": 1048576,
+   "id": "gemini-4-carbon",
+   "name": "Gemini 4 Carbon"
+  },
+  {
+   "_model_id": "gemini-4-hydrogen",
+   "_source": "google",
+   "_family": "gemini-4-hydrogen",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-4-hydrogen",
+   "name": "Gemini 4 Hydrogen"
+  },
+  {
+   "_model_id": "gemini-4-neon",
+   "_source": "google",
+   "_family": "gemini-4-neon",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 80.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 1048576,
+   "id": "gemini-4-neon",
+   "name": "Gemini 4 Neon"
+  },
+  {
+   "_model_id": "gpt-6-luna",
+   "_source": "openai-codex",
+   "_family": "gpt-6-luna",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 62.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 46.5,
+    "coding": 46.5,
+    "agentic": 46.5,
+    "aa_name": "GPT-6 Luna (Max)"
+   },
+   "_context": 272000,
+   "id": "gpt-6-luna",
+   "name": "GPT-6-Luna"
+  },
+  {
+   "_model_id": "gpt-5.6-terra",
+   "_source": "openai-codex",
+   "_family": "gpt-5.6-terra",
+   "_caps": {
+    "coding": 73.0,
+    "reasoning": 45.0,
+    "agentic": 70.0,
+    "tools": 62.0,
+    "long_context": 62.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_aa": {
+    "intel": 53.8,
+    "coding": 53.8,
+    "agentic": 53.8,
+    "aa_name": "GPT-5.6 Terra (Max)"
+   },
+   "_context": 272000,
+   "id": "gpt-5.6-terra",
+   "name": "GPT-5.6-Terra"
+  },
+  {
+   "_model_id": "gpt-5.6-luna",
+   "_source": "openai-codex",
+   "_family": "gpt-5.6-luna",
+   "_caps": {
+    "coding": 45.0,
+    "reasoning": 45.0,
+    "agentic": 40.0,
+    "tools": 40.0,
+    "long_context": 62.0,
+    "general": 50.0,
+    "multimodal": 0.0
+   },
+   "_context": 272000,
+   "id": "gpt-5.6-luna",
+   "name": "GPT-5.6-Luna"
+  }
+ ],
+ "expected": {
+  "main": "baidu/ernie-5.5-flash-preview:free",
+  "moa": "nvidia/nemotron-3-ultra-550b-a55b",
+  "fallbacks": [
+   [
+    "@cf/openai/gpt-oss-120b",
+    "coding-agent"
+   ],
+   [
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "reasoning"
+   ],
+   [
+    "gemini-2.5-flash",
+    "long-context"
+   ]
+  ],
+  "refs": [
+   "@cf/qwen/qwen3.8-27b",
+   "gpt-5.6-terra"
+  ],
+  "score_role": {
+   "inclusionai/ling-3.2-flash:free|openrouter|main": 61.13,
+   "inclusionai/ling-3.2-flash:free|openrouter|moa": 61.563,
+   "inclusionai/ling-3.2-flash:free|openrouter|coding": 48.0,
+   "inclusionai/ling-3.2-flash:free|openrouter|reasoning": 76.0,
+   "inclusionai/ling-3.2-flash:free|openrouter|long_context": 83.0,
+   "baidu/ernie-5.5-flash-preview:free|openrouter|main": 79.69,
+   "baidu/ernie-5.5-flash-preview:free|openrouter|moa": 71.121,
+   "baidu/ernie-5.5-flash-preview:free|openrouter|coding": 76.0,
+   "baidu/ernie-5.5-flash-preview:free|openrouter|reasoning": 76.0,
+   "baidu/ernie-5.5-flash-preview:free|openrouter|long_context": 83.0,
+   "liquid/lfm-3-1.7b:free|openrouter|main": 78.43,
+   "liquid/lfm-3-1.7b:free|openrouter|moa": 69.177,
+   "liquid/lfm-3-1.7b:free|openrouter|coding": 76.0,
+   "liquid/lfm-3-1.7b:free|openrouter|reasoning": 76.0,
+   "liquid/lfm-3-1.7b:free|openrouter|long_context": 65.0,
+   "recursive/flint-v1.0:free|openrouter|main": 78.43,
+   "recursive/flint-v1.0:free|openrouter|moa": 69.177,
+   "recursive/flint-v1.0:free|openrouter|coding": 76.0,
+   "recursive/flint-v1.0:free|openrouter|reasoning": 76.0,
+   "recursive/flint-v1.0:free|openrouter|long_context": 65.0,
+   "nvidia/nemotron-3.5-lightning:free|openrouter|main": 71.85,
+   "nvidia/nemotron-3.5-lightning:free|openrouter|moa": 67.593,
+   "nvidia/nemotron-3.5-lightning:free|openrouter|coding": 48.0,
+   "nvidia/nemotron-3.5-lightning:free|openrouter|reasoning": 76.0,
+   "nvidia/nemotron-3.5-lightning:free|openrouter|long_context": 83.0,
+   "nvidia/nemotron-3-ultra-550b-a55b:free|openrouter|main": 79.69,
+   "nvidia/nemotron-3-ultra-550b-a55b:free|openrouter|moa": 71.121,
+   "nvidia/nemotron-3-ultra-550b-a55b:free|openrouter|coding": 76.0,
+   "nvidia/nemotron-3-ultra-550b-a55b:free|openrouter|reasoning": 76.0,
+   "nvidia/nemotron-3-ultra-550b-a55b:free|openrouter|long_context": 83.0,
+   "google/lyria-3-pro-preview|openrouter|main": 49.45,
+   "google/lyria-3-pro-preview|openrouter|moa": 47.055,
+   "google/lyria-3-pro-preview|openrouter|coding": 48.0,
+   "google/lyria-3-pro-preview|openrouter|reasoning": 48.0,
+   "google/lyria-3-pro-preview|openrouter|long_context": 83.0,
+   "google/lyria-3-clip-preview|openrouter|main": 49.45,
+   "google/lyria-3-clip-preview|openrouter|moa": 47.055,
+   "google/lyria-3-clip-preview|openrouter|coding": 48.0,
+   "google/lyria-3-clip-preview|openrouter|reasoning": 48.0,
+   "google/lyria-3-clip-preview|openrouter|long_context": 83.0,
+   "openrouter/free|openrouter|main": 59.52,
+   "openrouter/free|openrouter|moa": 59.079,
+   "openrouter/free|openrouter|coding": 48.0,
+   "openrouter/free|openrouter|reasoning": 76.0,
+   "openrouter/free|openrouter|long_context": 60.0,
+   "@cf/openai/gpt-oss-120b|cloudflare|main": 72.51,
+   "@cf/openai/gpt-oss-120b|cloudflare|moa": 65.461,
+   "@cf/openai/gpt-oss-120b|cloudflare|coding": 77.0,
+   "@cf/openai/gpt-oss-120b|cloudflare|reasoning": 77.0,
+   "@cf/openai/gpt-oss-120b|cloudflare|long_context": 54.0,
+   "@cf/cloudflare/clairic-flash|cloudflare|main": 46.2,
+   "@cf/cloudflare/clairic-flash|cloudflare|moa": 41.98,
+   "@cf/cloudflare/clairic-flash|cloudflare|coding": 49.0,
+   "@cf/cloudflare/clairic-flash|cloudflare|reasoning": 49.0,
+   "@cf/cloudflare/clairic-flash|cloudflare|long_context": 34.0,
+   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|main": 56.19,
+   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|moa": 48.343,
+   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|coding": 77.0,
+   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|reasoning": 49.0,
+   "@cf/mistral/mistral-7b-instruct-v0.2-lora|cloudflare|long_context": 54.0
+  }
+ }
+}

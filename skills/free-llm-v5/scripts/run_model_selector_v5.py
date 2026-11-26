@@ -18,7 +18,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # Seletor: mesmo diretório deste wrapper; sobrescreva com FREE_LLM_V5_SELECTOR.
 SELECTOR = Path(os.environ.get("FREE_LLM_V5_SELECTOR")
-                or HERE / "hermes-free-model-selector-v5-integrated.py")
+                or HERE / "hermes-free-model-selector-v5.py")
 # Perfil alvo: defina HERMES_HOME explicitamente (ex.: ~/.hermes/profiles/<perfil>).
 HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
 CONFIG = HOME / "config.yaml"

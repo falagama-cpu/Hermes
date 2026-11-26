@@ -15,11 +15,18 @@ import io, json, os, sys, shutil, importlib.util, urllib.error, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent            # fixtures: scripts/hermes-free-model-selector-v4.py
+# Hermético: overrides de provedor herdados do shell (ex.: *_BASE_URL do .env do
+# Hermes) mudariam a URL do probe e quebrariam o teste sem ser bug do seletor.
+for _k in [k for k in os.environ if k.endswith("_BASE_URL") or k.startswith(("NOUS_", "OPENROUTER_",
+           "CLOUDFLARE_", "NVIDIA_", "GOOGLE_", "GEMINI_", "HERMES_"))]:
+    os.environ.pop(_k)
 HOME = Path(tempfile.mkdtemp(prefix="t_b1_free_llm_"))   # HERMES_HOME ISOLADO, NUNCA produção
 os.environ["HERMES_HOME"] = str(HOME)
 os.environ["CLOUDFLARE_ACCOUNT_ID"] = "fakeaccount"
 os.makedirs(HOME / "model-selector", exist_ok=True)
-sys.path.insert(0, str(ROOT / "scripts"))          # resolve `import aa_scores`
+# SELECTOR=<caminho> testa outro seletor com a mesma suíte (ex.: a V5 unificada).
+SCRIPT = Path(os.environ.get("SELECTOR") or ROOT / "scripts" / "hermes-free-model-selector-v4.py").resolve()
+sys.path.insert(0, str(SCRIPT.parent))            # resolve `import aa_scores`
 
 # stub config mínimo
 (HOME / "config.yaml").write_text(yaml_stub := """\
@@ -38,7 +45,6 @@ moa:
   default_preset: default
 """)
 
-SCRIPT = ROOT / "scripts" / "hermes-free-model-selector-v4.py"
 spec = importlib.util.spec_from_file_location("selector_b1", SCRIPT)
 sel = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sel)  # executa o módulo (carrega _REL, probe_ok, warmup_model)

@@ -1,6 +1,6 @@
 """aa_scores.py — ranking por benchmarks da Artificial Analysis (https://artificialanalysis.ai/).
 
-Usado pelo hermes-free-model-selector-v4.py. NÃO decide o que é free: o pool já chega
+Usado pelo hermes-free-model-selector-v5.py (antes: -v4.py). NÃO decide o que é free: o pool já chega
 filtrado (só modelos gratuitos). Aqui só anotamos cada modelo com os índices medidos
 pela AA para que o score de cada papel use dados de benchmark em vez de heurística
 por palavras-chave.

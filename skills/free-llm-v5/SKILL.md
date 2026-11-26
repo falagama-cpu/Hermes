@@ -1,16 +1,16 @@
 ---
 name: free-llm-v5
-description: "Use when installing, tuning or publishing the free-LLM selector V5 (V4 infrastructure + V5.1 selection)"
-version: 1.0.0
+description: "Use when installing, running or auditing the free-LLM selector V5 (single file)."
+version: 2.0.0
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [llm, free-models, cron, openrouter, nvidia, cloudflare, nous, gemini, openai-codex, v5]
-    related_skills: [free-llm]
+    tags: [llm, free-models, cron, openrouter, nvidia, cloudflare, nous, gemini, openai-codex, chatgpt, v5]
+    related_skills: [free-llm, council]
 prerequisites:
-  commands: [hermes]
+  commands: [hermes, python3]
 required_environment_variables:
   - name: OPENROUTER_API_KEY
     prompt: OpenRouter API key
@@ -40,42 +40,73 @@ required_environment_variables:
 
 # Free LLM Selection V5
 
-V5 is a separate skill that keeps the proven V4 operational infrastructure
-(fetchers, credentials, warm-up, persistence, backup, reliability) and replaces
-only the selection algorithms with the V5.1 role-based implementation.
+Um job de cron escolhe **MAIN**, **MoA** (aggregator + reference models) e **3 fallbacks**
+somente entre modelos gratuitos de OpenRouter, Nous Portal, Cloudflare Workers AI,
+NVIDIA NIM, Google AI Studio e **OpenAI via login ChatGPT**, e grava no `config.yaml` do
+perfil (com backup, probe e histórico).
+
+**Arquivo único:** `scripts/hermes-free-model-selector-v5.py` contém a infraestrutura
+operacional (ex-V4: fetchers, credenciais, warm-up, probe, persistência, backup,
+confiabilidade, restart do gateway) e a seleção por papel V5.1. Não depende de nenhum
+arquivo da V4 — a skill `free-llm` (V4) pode ser removida sem afetar esta.
 
 ## When to Use
 
-- Trocar MAIN, MOA e fallbacks do perfil com o algoritmo V5.
-- Auditar a cadeia de seleção V5 separada da V4.
-- Publicar ou instalar a V5 sem alterar a skill V4.
+- Instalar/rodar o seletor de LLMs gratuitas num perfil do Hermes.
+- Diagnosticar por que uma fonte (ex.: ChatGPT) não entrou na seleção.
+- Auditar a seleção (testes offline + golden de paridade).
 
 ## Files
 
-- `scripts/hermes-free-model-selector-v5-integrated.py` — V5 integrated entrypoint.
-- `scripts/hermes-free-model-selector-v5.1.py` — V5.1 selection algorithms.
-- `scripts/hermes-free-model-selector-v4.py` — V4 operational infrastructure used by V5.
-- `scripts/aa_scores.py`, `scripts/nvidia_official_free.py` — V4 dependencies.
-- `scripts/run_model_selector_v5.py` — cron wrapper: runs the selector, saves the full
-  log to `<HERMES_HOME>/model-selector/last_run_v5.log` and prints only MAIN/MOA/fallbacks.
-  Exit codes: `0` ok, `1` selector not found, `3` selection not confirmed, `124` timeout.
-- `tests/test_v5_simple.py` — offline sanity checks of the V5 scoring rules (no network).
-- `references/` — architecture, mapping, contracts, tests, migration and benchmark.
+- `scripts/hermes-free-model-selector-v5.py` — seletor (entrypoint único).
+- `scripts/aa_scores.py`, `scripts/nvidia_official_free.py` — módulos de apoio (mesma pasta).
+- `scripts/run_model_selector_v5.py` — wrapper de cron: roda o seletor, salva o log
+  completo em `<HERMES_HOME>/model-selector/last_run_v5.log` e imprime só MAIN/MOA/fallbacks.
+  Exit codes: `0` ok, `1` seletor não encontrado, `3` seleção não confirmada, `124` timeout.
+- `tests/test_v5_unified.py` + `tests/fixtures/pool_20261126.json` — testes offline (22).
+- `references/V5_TEST_AUDIT.md` — auditoria de testes e defeitos conhecidos da seleção.
+- `references/V5_*.md` (demais) — documentação histórica do desenho "integrated".
 
-## Cron
+## Uso
 
 ```bash
+# simular (não grava config.yaml)
+HERMES_HOME=~/.hermes/profiles/<perfil> python3 scripts/hermes-free-model-selector-v5.py --dry-run
+# cron (wrapper)
 HERMES_HOME=~/.hermes/profiles/<perfil> python3 scripts/run_model_selector_v5.py
+# testes
+python3 tests/test_v5_unified.py
 ```
 
-Sugestão de agendamento (Hermes cron, `no_agent`): `0 2,10,18 * * *` (hora local).
-Sempre defina `HERMES_HOME` explicitamente — o seletor reescreve o `config.yaml` do
-perfil apontado (`model.default`, `moa`, `fallback_providers`). Sem ele, o padrão é
-`~/.hermes` (perfil default). `FREE_LLM_V5_SELECTOR` sobrescreve o caminho do seletor.
+Agendamento sugerido (Hermes cron, `no_agent`): `0 2,10,18 * * *` (hora local).
+Sempre defina `HERMES_HOME` explicitamente — o seletor reescreve o `config.yaml` do perfil
+apontado (`model.default`, `moa`, `fallback_providers`) e reinicia o gateway. Sem ele o
+padrão é `~/.hermes` (perfil default). `FREE_LLM_V5_SELECTOR` sobrescreve o caminho do seletor.
+
+## Login ChatGPT (OpenAI Codex)
+
+Sem API key: usa o login OAuth do Hermes (`hermes auth add openai-codex`).
+
+- Ordem de busca do token: `auth.json` → `providers.openai-codex` → `credential_pool.openai-codex`
+  → Codex CLI (`$CODEX_HOME/auth.json`, padrão `~/.codex/auth.json`).
+- `auth.json` é lido como `utf-8-sig` (no Windows pode ter BOM; a V4 descartava o arquivo).
+- `hermes auth status` diz "logged in" mesmo com o access token **vencido** (o Hermes renova
+  na hora do uso). Se só houver token vencido, a V5 pede ao **próprio Hermes** para renovar
+  (`hermes auth refresh openai-codex`, com o `HERMES_HOME` do perfil) e relê — o seletor nunca
+  gasta o refresh token sozinho. Desligue com `HERMES_CODEX_REFRESH=0`.
+- Disponibilidade vem de `/wham/usage` (não consome cota); cota esgotada → fonte ignorada na rodada.
+- O log agora diz o **motivo** quando a fonte é ignorada (ausente, não-JWT, expirado, refresh falhou).
+
+## Pitfalls
+
+- **Nunca rode com `auth.json` copiado e refresh ligado**: a renovação rotaciona o refresh
+  token na cópia e invalida o login original. Em sandbox/testes use `HERMES_CODEX_REFRESH=0`.
+- Variáveis `*_BASE_URL` no ambiente sobrescrevem endpoints; um valor errado (ex.: uma API key
+  em `NOUS_BASE_URL`) quebra o probe com `unknown url type`.
+- A seleção V5.1 tem defeitos conhecidos (dependência da ordem do catálogo, AA e confiabilidade
+  ignoradas no score) — ver `references/V5_TEST_AUDIT.md` antes de alterar pesos.
 
 ## Important
 
-- A V4 permanece intacta como skill separada.
-- A V5 não substitui a V4 automaticamente.
-- As exclusões `not_free` são momentâneas na V5 (duram apenas a execução corrente).
+- `not_free` é momentâneo na V5 (`HERMES_NOT_FREE_TTL_S`, padrão 0).
 - Nenhuma credencial é gravada na skill.

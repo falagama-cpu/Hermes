@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-Hermes Agent — Free LLM Multi-Provider Selector
-================================================
+Hermes Agent — Free LLM Multi-Provider Selector — V5 (arquivo único)
+===================================================================
+
+V5 = infraestrutura operacional da V4 (fetchers, credenciais, warm-up, probe,
+persistência, backup, histórico, confiabilidade, restart do gateway) + algoritmos
+de seleção V5.1 por papel (MAIN / MOA / fallbacks). Não depende de nenhum arquivo
+da V4: é autossuficiente (só precisa de aa_scores.py e nvidia_official_free.py ao
+lado). Comportamento de seleção idêntico à antiga "V5 integrated" (monkey-patch da
+V4), comprovado por teste de paridade.
 
 Fontes monitoradas:
   1. OpenRouter
@@ -9,6 +16,7 @@ Fontes monitoradas:
   3. Cloudflare Workers AI
   4. NVIDIA NIM / NVIDIA API Catalog
   5. Google AI Studio (Gemini, free tier da chave)
+  6. OpenAI via login ChatGPT (provider openai-codex do Hermes, OAuth)
 
 Objetivo:
   MAIN    -> melhor LLM geral para o Hermes
@@ -46,14 +54,16 @@ Credenciais:
   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
   NVIDIA_API_KEY
   GOOGLE_API_KEY (ou GEMINI_API_KEY)
+  ChatGPT/Codex: login OAuth do Hermes (hermes auth add openai-codex), lido de
+    $HERMES_HOME/auth.json; fallback: Codex CLI ($CODEX_HOME/auth.json).
 
 Coloque em $HERMES_HOME/.env (perfil: ~/.hermes/profiles/<perfil>/.env).
 
 Exemplos:
-  HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v4.py --dry-run
-  HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v4.py --force
+  HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v5.py --dry-run
+  HERMES_HOME=~/.hermes/profiles/<perfil> python3 hermes-free-model-selector-v5.py --force
 
-Agendamento: use install_free_model_selection.sh (cria o job no cron do Hermes).
+Agendamento: run_model_selector_v5.py (wrapper de cron, job no_agent do Hermes).
 
 Dependência:
   pip3 install pyyaml
@@ -133,9 +143,11 @@ CATALOG_JSON = STATE_DIR / "catalog.json"
 CATALOG_YAML = STATE_DIR / "catalog.yaml"
 RELIABILITY_FILE = STATE_DIR / "reliability.json"
 # Modelos que o provedor recusou por PLANO (ex.: Cloudflare 5035 "not available on
-# the Workers Free plan"): não são free para esta conta. Revalidados a cada 7 dias.
+# the Workers Free plan"): não são free para esta conta.
+# V5: exclusões MOMENTÂNEAS — os provedores devolvem catálogo novo a cada execução,
+# então nada de quarentena de 7 dias (V4). Override: HERMES_NOT_FREE_TTL_S.
 NOT_FREE_FILE = STATE_DIR / "not_free.json"
-NOT_FREE_TTL_S = 7 * 24 * 3600
+NOT_FREE_TTL_S = int(os.environ.get("HERMES_NOT_FREE_TTL_S", "0"))
 
 
 def _load_not_free() -> Dict[str, Any]:
@@ -1551,40 +1563,127 @@ CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 _CODEX_STATUS: Dict[str, Any] = {}
 
 
-def _codex_token() -> Optional[Tuple[str, Dict[str, str]]]:
-    """(access_token, headers) do login openai-codex, ou None se ausente/expirado."""
+CODEX_TOKEN_SKEW_S = 300
+# Renovação delegada ao PRÓPRIO Hermes (`hermes auth refresh openai-codex`), que
+# grava o par rotativo com trava no auth.json — o seletor nunca usa o refresh_token
+# diretamente. Desligue com HERMES_CODEX_REFRESH=0.
+CODEX_REFRESH = os.environ.get("HERMES_CODEX_REFRESH", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _jwt_claims(token: Any) -> Optional[Dict[str, Any]]:
     import base64
+    if not isinstance(token, str) or token.count(".") < 2:
+        return None
     try:
-        auth = json.loads((HERMES_HOME / "auth.json").read_text())
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (ValueError, TypeError):
+        return None
+    return claims if isinstance(claims, dict) else None
+
+
+def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        # utf-8-sig: no Windows o auth.json pode ter BOM e o encoding padrão é cp1252.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
-    tokens = ((auth.get("providers") or {}).get("openai-codex") or {}).get("tokens") or {}
-    candidates = [tokens.get("access_token")]
-    for entry in (auth.get("credential_pool") or {}).get("openai-codex") or []:
-        if isinstance(entry, dict):
-            candidates.append(entry.get("access_token") or entry.get("runtime_api_key"))
-    for token in candidates:
-        if not isinstance(token, str) or token.count(".") < 2:
+    return data if isinstance(data, dict) else None
+
+
+def _codex_candidates() -> Tuple[List[Tuple[str, str, Optional[str]]], List[str]]:
+    """[(origem, access_token, pool_entry_id)], + notas de diagnóstico."""
+    notes: List[str] = []
+    out: List[Tuple[str, str, Optional[str]]] = []
+    auth = _read_json_file(HERMES_HOME / "auth.json")
+    if auth is None:
+        notes.append(f"{HERMES_HOME / 'auth.json'} ausente/ilegível")
+    else:
+        prov = (auth.get("providers") or {}).get("openai-codex") or {}
+        tokens = prov.get("tokens") if isinstance(prov.get("tokens"), dict) else {}
+        if tokens.get("access_token"):
+            out.append(("auth.json:providers", tokens["access_token"], None))
+        pool = (auth.get("credential_pool") or {}).get("openai-codex") or []
+        for entry in pool if isinstance(pool, list) else []:
+            if isinstance(entry, dict):
+                tok = entry.get("access_token") or entry.get("runtime_api_key")
+                if tok:
+                    out.append((f"auth.json:pool:{entry.get('id') or '?'}", tok, entry.get("id")))
+        if not out:
+            notes.append("auth.json sem tokens openai-codex")
+    codex_home = Path(os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex")
+    cli = _read_json_file(codex_home / "auth.json")
+    cli_tokens = (cli or {}).get("tokens") if isinstance((cli or {}).get("tokens"), dict) else {}
+    if cli_tokens.get("access_token"):
+        out.append(("codex-cli", cli_tokens["access_token"], None))
+    return out, notes
+
+
+def _codex_pick(cands: List[Tuple[str, str, Optional[str]]], notes: List[str]):
+    """Primeiro token JWT válido (> CODEX_TOKEN_SKEW_S para expirar)."""
+    for origin, token, _ in cands:
+        claims = _jwt_claims(token)
+        if claims is None:
+            notes.append(f"{origin}: não é JWT")
             continue
-        try:
-            part = token.split(".")[1]
-            claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
-        except (ValueError, TypeError):
+        left = claims.get("exp", 0) - time.time()
+        if left < CODEX_TOKEN_SKEW_S:
+            notes.append(f"{origin}: expirado/expirando ({int(left)}s)")
             continue
-        if claims.get("exp", 0) - time.time() < 300:
-            continue
-        info = claims.get("https://api.openai.com/auth") or {}
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "User-Agent": "codex-cli",
-            "originator": "codex_cli_rs",
-        }
-        if info.get("chatgpt_account_id"):
-            headers["ChatGPT-Account-ID"] = info["chatgpt_account_id"]
-        _CODEX_STATUS["plan"] = info.get("chatgpt_plan_type") or "?"
-        return token, headers
+        return origin, token, claims
     return None
+
+
+def _codex_refresh_via_hermes(cands: List[Tuple[str, str, Optional[str]]], notes: List[str]) -> bool:
+    """Pede ao Hermes para renovar o login (ele mesmo grava auth.json com trava)."""
+    hermes = shutil.which("hermes")
+    if not hermes:
+        notes.append("CLI `hermes` não encontrado no PATH — sem renovação")
+        return False
+    pool_ids = [pid for origin, _, pid in cands if pid]
+    cmd = [hermes, "auth", "refresh", "openai-codex"] + (pool_ids[:1] if len(pool_ids) > 1 else [])
+    env = {**os.environ, "HERMES_HOME": str(HERMES_HOME)}
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env,
+                              encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        notes.append(f"hermes auth refresh falhou: {exc}")
+        return False
+    if proc.returncode != 0:
+        notes.append(f"hermes auth refresh rc={proc.returncode}: "
+                     f"{((proc.stderr or proc.stdout or '').strip().splitlines() or [''])[-1][:160]}")
+        return False
+    logging.info("OpenAI (login ChatGPT): token renovado pelo Hermes (hermes auth refresh).")
+    return True
+
+
+def _codex_token() -> Optional[Tuple[str, Dict[str, str]]]:
+    """(access_token, headers) do login openai-codex, ou None com motivo no log.
+
+    Ordem: auth.json (providers -> credential_pool) -> Codex CLI. Se só houver token
+    expirado, pede ao Hermes para renovar (HERMES_CODEX_REFRESH=1, padrão) e relê."""
+    cands, notes = _codex_candidates()
+    picked = _codex_pick(cands, notes)
+    if picked is None and cands and CODEX_REFRESH and _codex_refresh_via_hermes(cands, notes):
+        cands, more = _codex_candidates()
+        notes += more
+        picked = _codex_pick(cands, notes)
+    if picked is None:
+        _CODEX_STATUS["reason"] = "; ".join(notes) or "nenhuma credencial openai-codex"
+        return None
+    origin, token, claims = picked
+    info = claims.get("https://api.openai.com/auth") or {}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+        "originator": "codex_cli_rs",
+    }
+    if info.get("chatgpt_account_id"):
+        headers["ChatGPT-Account-ID"] = info["chatgpt_account_id"]
+    _CODEX_STATUS["plan"] = info.get("chatgpt_plan_type") or "?"
+    _CODEX_STATUS["origin"] = origin
+    return token, headers
 
 
 def codex_usage_ok(headers: Dict[str, str]) -> bool:
@@ -1606,8 +1705,9 @@ def codex_usage_ok(headers: Dict[str, str]) -> bool:
 def fetch_openai_codex() -> List[Dict[str, Any]]:
     cred = _codex_token()
     if not cred:
-        logging.warning("OpenAI (login ChatGPT): sem token válido em auth.json "
-                        "(faça login: hermes auth add openai-codex) — fonte ignorada.")
+        logging.warning("OpenAI (login ChatGPT): sem token válido — fonte ignorada. Motivo: %s. "
+                        "Corrija com: hermes auth refresh openai-codex (ou hermes auth add "
+                        "openai-codex).", _CODEX_STATUS.get("reason"))
         return []
     _, headers = cred
     if not codex_usage_ok(headers):
@@ -1620,7 +1720,8 @@ def fetch_openai_codex() -> List[Dict[str, Any]]:
     try:
         payload = http_json(CODEX_BASE_URL + "/models?client_version=99.0.0", headers=headers)
     except Exception as exc:
-        logging.warning("OpenAI (login ChatGPT): catálogo indisponível: %s", exc)
+        logging.warning("OpenAI (login ChatGPT, origem %s): catálogo indisponível: %s",
+                        _CODEX_STATUS.get("origin"), exc)
         return []
 
     result = []
@@ -3669,6 +3770,246 @@ def probe_ok(model: Optional[Dict[str, Any]]) -> bool:
 # CLI
 # =============================================================================
 
+# =============================================================================
+# SELEÇÃO V5.1 (por papel)
+# =============================================================================
+# Portado 1:1 de hermes-free-model-selector-v5.1.py. Na antiga "V5 integrated"
+# estas funções rodavam no namespace do módulo V5.1, com as globais DELE; por isso
+# as constantes que diferem da V4 ficam prefixadas _V51_ (SOURCE_BONUS da V5.1 !=
+# SOURCE_BONUS da V4, usado pelo restante da infraestrutura). MIN_CONTEXT,
+# FALLBACK_COUNT, FALLBACK_PROFILES e AA_MISSING_PENALTY são idênticos nas duas.
+# Os rebinds no fim da seção substituem as funções de seleção da V4.
+
+_V51_SOURCE_BONUS = {
+    "openrouter": 0.0,
+    "nvidia": 2.0,
+    "nous": 1.5,
+    "cloudflare": 1.0,
+    "google": 0.5,
+    "openai-codex": 0.0,
+}
+
+_V51_ROLE_WEIGHTS = {
+    "main": 1.0,
+    "moa": 0.9,
+    "fallback1": 0.8,
+    "fallback2": 0.75,
+    "fallback3": 0.7,
+}
+
+_V51_PROVIDER_DIVERSITY = {
+    "enabled": True,
+    "max_same_provider": 2,
+    "diversity_bonus": 3.0,
+    "penalty_same_provider": 2.0,
+    "prefer_new_providers": True,
+    "min_providers": 2,
+}
+
+
+def _v51_score_role(model: Dict[str, Any], role: str) -> float:
+    """Score por papel da V5.1 (_score_role_v5_enhanced)."""
+    caps = model.get("_caps") or {}
+    if role == "main":
+        base_score = (
+            caps.get("coding", 0.0) * 0.28
+            + caps.get("agentic", 0.0) * 0.24
+            + caps.get("reasoning", 0.0) * 0.20
+            + caps.get("tools", 0.0) * 0.16
+            + caps.get("long_context", 0.0) * 0.07
+            + caps.get("general", 0.0) * 0.05
+        )
+    elif role == "moa":
+        base_score = (
+            caps.get("reasoning", 0.0) * 0.44
+            + caps.get("coding", 0.0) * 0.14
+            + caps.get("agentic", 0.0) * 0.15
+            + caps.get("tools", 0.0) * 0.10
+            + caps.get("long_context", 0.0) * 0.12
+            + caps.get("general", 0.0) * 0.05
+        )
+    elif role in caps:
+        base_score = caps.get(role, 0.0)
+    else:
+        base_score = model.get("capabilities", {}).get(role, 0.0)
+
+    weighted_score = base_score * _V51_ROLE_WEIGHTS.get(role, 1.0)
+
+    context_bonus = 0.0
+    if model.get("_caps", {}).get("long_context", 0) >= MIN_CONTEXT:
+        context_bonus = 5.0
+
+    source_bonus = _V51_SOURCE_BONUS.get(model.get("_source", ""), 0.0)
+
+    diversity_bonus = 0.0
+    if _V51_PROVIDER_DIVERSITY["enabled"]:
+        diversity_bonus = _V51_PROVIDER_DIVERSITY["diversity_bonus"]
+
+    return weighted_score + context_bonus + source_bonus + diversity_bonus
+
+
+def _v51_group_by_family(models: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for model in models:
+        groups.setdefault(model.get("_family", "unknown"), []).append(model)
+    return groups
+
+
+def _v51_best_route_for_family(
+    routes: List[Dict[str, Any]],
+    role: str,
+    used_sources: Optional[Set[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not routes:
+        return None
+    used_sources = used_sources or set()
+
+    def route_score(route: Dict[str, Any]) -> float:
+        score = route.get("_role_score", 0)
+        if route.get("_caps", {}).get("long_context", 0) >= MIN_CONTEXT:
+            score += 5.0
+        if route.get("_source", "") not in used_sources and _V51_PROVIDER_DIVERSITY["enabled"]:
+            score += 3.0
+        return score
+
+    return max(routes, key=route_score)
+
+
+def _v51_family_candidates(
+    models: List[Dict[str, Any]],
+    role: str,
+    used_families: Set[str],
+    used_sources: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    result = []
+    for family, routes in _v51_group_by_family(models).items():
+        if family in used_families:
+            continue
+        best_route = _v51_best_route_for_family(routes, role, used_sources=used_sources)
+        if best_route:
+            candidate = copy.deepcopy(best_route)
+            candidate["_role_score"] = _v51_score_role(candidate, role)
+            result.append(candidate)
+    return result
+
+
+def _v51_choose_main(models: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = _v51_family_candidates(models, "main", used_families=set(), used_sources=set())
+    if not candidates:
+        logging.warning("No MAIN candidates available")
+        return None
+
+    def main_selection_key(model: Dict[str, Any]) -> float:
+        main_score = model["_role_score"] * _V51_ROLE_WEIGHTS["main"]
+        source_bonus = _V51_SOURCE_BONUS.get(model.get("_source", ""), 0.0)
+        diversity_bonus = 0.0
+        if _V51_PROVIDER_DIVERSITY["enabled"] and model.get("_source"):
+            diversity_bonus = _V51_PROVIDER_DIVERSITY["diversity_bonus"]
+        return main_score + source_bonus + diversity_bonus
+
+    selected = max(candidates, key=main_selection_key)
+    logging.info(f"MAIN selected: {selected['_model_id']} "
+                 f"(score={selected['_role_score']}, source={selected['_source']})")
+    return selected
+
+
+def _v51_unused_source_candidates(
+    models: List[Dict[str, Any]],
+    role: str,
+    used_families: Set[str],
+    used_sources: Set[str],
+) -> List[Dict[str, Any]]:
+    fresh = [m for m in models if m["_source"] not in used_sources]
+    return (
+        _v51_family_candidates(fresh, role, used_families, used_sources)
+        or _v51_family_candidates(models, role, used_families, used_sources)
+    )
+
+
+def _v51_choose_moa(
+    models: List[Dict[str, Any]],
+    used_families: Set[str],
+    used_sources: Set[str],
+) -> Optional[Dict[str, Any]]:
+    candidates = _v51_unused_source_candidates(models, "moa", used_families, used_sources)
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda m: m["_role_score"] + (4 if m["_source"] not in used_sources else 0),
+    )
+
+
+def _v51_capability_distance(a: Dict[str, float], b: Dict[str, float]) -> float:
+    keys = ("coding", "reasoning", "agentic", "tools", "long_context", "general")
+    return sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in keys) / len(keys)
+
+
+def _v51_fallback_score(
+    model: Dict[str, Any],
+    profile: str,
+    selected: List[Dict[str, Any]],
+    used_sources: Set[str],
+) -> float:
+    # Na V5.1, score_role (do módulo dela) = enhanced - AA_MISSING_PENALTY.
+    base = _v51_score_role(model, profile) - AA_MISSING_PENALTY
+    if model["_source"] not in used_sources:
+        base += 5
+    if not selected:
+        return base
+    caps = model["_caps"]
+    redundancy = 0.0
+    for previous in selected:
+        redundancy += 100 - _v51_capability_distance(caps, previous["_caps"])
+    redundancy /= len(selected)
+    base -= redundancy * 0.10
+    return base
+
+
+def _v51_choose_fallbacks(
+    models: List[Dict[str, Any]],
+    used_families: Set[str],
+    used_sources: Set[str],
+) -> List[Dict[str, Any]]:
+    selected: List[Dict[str, Any]] = []
+    families = set(used_families)
+    sources = set(used_sources)
+    for profile_name, label, role in FALLBACK_PROFILES:
+        candidates = _v51_family_candidates(models, role, families, sources)
+        if not candidates:
+            logging.warning("Não foi encontrado fallback para perfil %s.", profile_name)
+            continue
+        ranked = sorted(
+            candidates,
+            key=lambda model: _v51_fallback_score(model, role, selected, sources),
+            reverse=True,
+        )
+        chosen = ranked[0]
+        chosen["_fallback_profile"] = profile_name
+        chosen["_fallback_label"] = label
+        chosen["_fallback_score"] = _v51_fallback_score(chosen, role, selected, sources)
+        selected.append(chosen)
+        families.add(chosen["_family"])
+        sources.add(chosen["_source"])
+        if len(selected) >= FALLBACK_COUNT:
+            break
+    return selected
+
+
+# Implementações da V4 preservadas (referência/rollback), depois os rebinds V5.1.
+_v4_score_role = score_role
+_v4_choose_main = choose_main
+_v4_choose_moa = choose_moa
+_v4_choose_fallbacks = choose_fallbacks
+
+score_role = _v51_score_role
+choose_main = _v51_choose_main
+choose_moa = _v51_choose_moa
+choose_fallbacks = _v51_choose_fallbacks
+
+SELECTOR_VERSION = "5.2.0"
+
+
 def main() -> int:
     # Windows: console cp1252 quebra com acentos/emojis do log.
     for stream in (sys.stdout, sys.stderr):
@@ -3723,6 +4064,8 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    print(f"Hermes Free LLM Selector V{SELECTOR_VERSION} "
+          "(arquivo único: infra V4 + seleção V5.1)")
     try:
         return run(args)
     except KeyboardInterrupt:
