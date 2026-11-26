@@ -1,7 +1,7 @@
 ---
 name: free-llm-v5
 description: "Use when installing, running or auditing the free-LLM selector V5 (single file)."
-version: 2.1.0
+version: 2.1.1
 author: falagama-cpu
 license: MIT
 platforms: [linux, macos, windows]
@@ -68,7 +68,7 @@ do MAIN/MOA. Rollback para a seleção V5.1 original: `HERMES_V5_SELECTION=5.1`.
 - `scripts/run_model_selector_v5.py` — wrapper de cron: roda o seletor, salva o log
   completo em `<HERMES_HOME>/model-selector/last_run_v5.log` e imprime só MAIN/MOA/fallbacks.
   Exit codes: `0` ok, `1` seletor não encontrado, `3` seleção não confirmada, `124` timeout.
-- `tests/test_v5_unified.py` + `tests/fixtures/pool_20261126.json` — testes offline (28).
+- `tests/test_v5_unified.py` + `tests/fixtures/pool_20261126.json` — testes offline (30).
 - `references/V5_TEST_AUDIT.md` — auditoria de testes, defeitos A1-A13 e correções V5.2.
 - `references/V5_*.md` (demais) — documentação histórica do desenho "integrated".
 

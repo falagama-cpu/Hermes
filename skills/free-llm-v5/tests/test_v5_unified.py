@@ -258,6 +258,44 @@ class T4Invariants(Base):
         self.assertEqual(p, before)
 
 
+class T7GoogleProbe(Base):
+    """Bug herdado da V4 (achado A14): 429 do Google aprovava o probe (ok=True) e um
+    MAIN fora do free tier ('limit: 0') era gravado no config.yaml."""
+
+    def probe_with(self, status, body):
+        import io
+        import urllib.error
+        s = self.sel
+        m = next(x for x in self.pool() if x["_source"] == "google")
+        saved = (s.urllib.request.urlopen, s._resolve_key, s.config_entry)
+
+        def fake(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, status, "x", {}, io.BytesIO(body.encode()))
+        s.urllib.request.urlopen = fake
+        s._resolve_key = lambda _m: "test-key"
+        s.config_entry = lambda _m: {"model": _m["_model_id"], "provider": "gemini", "base_url": "https://x"}
+        s._PROBE_CACHE.clear()
+        try:
+            return m, s.probe_ok(m), dict(s._PROBE_CACHE.get(m["_model_id"], {}))
+        finally:
+            s.urllib.request.urlopen, s._resolve_key, s.config_entry = saved
+            s._PROBE_CACHE.clear()
+
+    def test_limit_zero_is_rejected_and_marked_not_free(self):
+        m, ok, res = self.probe_with(429, '{"error": {"details": [{"limit": 0}]}} quota limit: 0')
+        self.assertFalse(ok)
+        self.assertTrue(res.get("not_free"))
+        self.assertIn(m["_model_id"], json.loads(self.sel.NOT_FREE_FILE.read_text()))
+        self.assertEqual(self.sel._REL, {})          # cota não conta como falha
+
+    def test_daily_quota_429_is_rejected_without_reliability_failure(self):
+        _, ok, res = self.probe_with(429, '{"error": "RESOURCE_EXHAUSTED", "limit": 250}')
+        self.assertFalse(ok)
+        self.assertTrue(res.get("quota_exhausted"))
+        self.assertFalse(res.get("not_free"))
+        self.assertEqual(self.sel._REL, {})
+
+
 class T5Codex(Base):
     def setUp(self):
         self.auth = self.home / "auth.json"

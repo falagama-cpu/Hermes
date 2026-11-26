@@ -166,7 +166,8 @@ def mark_not_free(model: Optional[Dict[str, Any]], reason: str) -> None:
     data[model["_model_id"]] = {"reason": reason, "ts": time.time()}
     NOT_FREE_FILE.parent.mkdir(parents=True, exist_ok=True)
     NOT_FREE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    logging.warning("NÃO-FREE (excluído por 7 dias): %s — %s", model["_model_id"], reason)
+    ttl = f"por {NOT_FREE_TTL_S // 86400} dias" if NOT_FREE_TTL_S >= 86400 else "nesta rodada"
+    logging.warning("NÃO-FREE (excluído %s): %s — %s", ttl, model["_model_id"], reason)
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 NOUS_BASE_URL = os.environ.get(
@@ -3710,11 +3711,27 @@ def warmup_model(
             return result
         # Google: 429 "limit: 0" = modelo fora do free tier desta chave (pago).
         # 429 com limite > 0 = cota diária gasta: não seleciona agora, re-testa
-        # na próxima execução (a cota zera todo dia).
+        # na próxima execução (a cota zera todo dia). Nos dois casos ok=False
+        # (V5.2: a V4 devolvia ok=True e podia GRAVAR um MAIN pago/sem cota —
+        # com not_free momentâneo isso se repetia a cada rodada). Não soma falha.
         if model["_source"] == "google" and status == 429:
-            if "limit: 0" in err_body or '"limit": 0' in err_body:
+            not_free = "limit: 0" in err_body or '"limit": 0' in err_body
+            if not_free:
                 mark_not_free(model, "google: fora do free tier (limit 0)")
-            result["quota_exhausted"] = True
+            result.update(
+                ok=False,
+                http_status=status,
+                latency_ms=round((time.monotonic() - start) * 1000),
+                quota_exhausted=True,
+                not_free=not_free,
+                reason=("google: fora do free tier (limit 0)" if not_free
+                        else "google: cota diária esgotada (429)"),
+            )
+            if label == "probe":
+                _PROBE_CACHE[model["_model_id"]] = dict(result)
+            logging.warning("Warm-up %s (%s): %s — descartado nesta rodada.",
+                            label, entry["model"], result["reason"])
+            return result
     except Exception as exc:
         result.update(
             ok=False, reason=f"erro: {type(exc).__name__}",
@@ -4120,7 +4137,7 @@ else:
     # score_role, choose_main, choose_moa, choose_moa_references, choose_fallbacks e
     # fallback_score: implementações da infraestrutura, que chamam as globais acima.
 
-SELECTOR_VERSION = "5.2.0"
+SELECTOR_VERSION = "5.2.1"
 
 
 def main() -> int:

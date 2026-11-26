@@ -61,6 +61,7 @@ Outros achados operacionais:
 - A10 — instalações que copiaram só os arquivos de seleção ficaram **sem `nvidia_official_free.py`**: a validação do badge oficial "Free Endpoint" da NVIDIA é pulada em todo ciclo (log: "módulo nvidia_official_free.py ausente"). A skill unificada inclui o módulo.
 - A11 — API da Artificial Analysis respondendo **HTTP 410**; o seletor usa cache antigo (14/53 modelos com benchmark).
 - A12 — `hermes auth status` mostra "logged in" para o ChatGPT mesmo com access token vencido; a V4 ignorava a fonte silenciosamente ("sem token válido"). Corrigido na V5 (motivo no log + renovação via Hermes).
+- A14 — (herdado da V4, exposto pela V5.2) **429 do Google aprovava o probe** (`ok=True`). Um MAIN fora do free tier ("limit: 0") era gravado no `config.yaml`; com `not_free` momentâneo isso se repetiria a cada rodada. Encontrado na 1ª rodada real da V5.2 (MAIN `gemini-4-carbon`, pago para a chave) — config restaurado antes de qualquer restart. Corrigido: 429 do Google → `ok=False` (sem contar falha de confiabilidade), igual ao Cloudflare 4006; testes `T7GoogleProbe`.
 
 ## 5. Correções — seleção V5.2 (padrão a partir da 5.2.0)
 
