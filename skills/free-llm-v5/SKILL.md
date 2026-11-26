@@ -74,6 +74,8 @@ do MAIN/MOA. Rollback para a seleção V5.1 original: `HERMES_V5_SELECTION=5.1`.
 - `tests/test_v5_unified.py` + `tests/fixtures/pool_20261126.json` — testes offline (31).
 - `references/V5_TEST_AUDIT.md` — auditoria de testes, defeitos A1-A13 e correções V5.2.
 - `references/V5_*.md` (demais) — documentação histórica do desenho "integrated".
+- `references/adding-a-source.md`, `benchmark-sources.md`, `public-publishing.md` — como adicionar
+  uma fonte, fontes de benchmark avaliadas e checklist de publicação (herdados da V4, valem para a V5).
 
 ## Uso
 
